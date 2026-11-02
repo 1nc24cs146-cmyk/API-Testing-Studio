@@ -1,6 +1,6 @@
 # Skill: API Environments
 
-Status: Implemented in API Testing Studio v0.1.2 (sidebar webview).
+Status: Implemented in ApiDiya v0.1.2 (sidebar webview).
 
 ## When to use
 When the same request must run against different servers (local, testing, staging, production) without editing every URL.

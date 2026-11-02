@@ -1,4 +1,4 @@
-# API Testing Studio — Requirements
+# ApiDiya — Requirements
 
 ## What it is
 A sidebar API testing workspace for VS Code and Antigravity, built from the project spec (MVP first, then AI/MCP features). Version in this folder: check `package.json`.

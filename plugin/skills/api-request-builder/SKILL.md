@@ -1,6 +1,6 @@
 # Skill: API Request Builder
 
-Status: Implemented in API Testing Studio v0.1.2 (sidebar webview).
+Status: Implemented in ApiDiya v0.1.2 (sidebar webview).
 
 ## When to use
 When a developer wants to send a single HTTP request and inspect the response, without leaving VS Code or Antigravity.

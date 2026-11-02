@@ -10,14 +10,14 @@
     "commands": [
       {
         "command": "apiStudio.open",
-        "title": "API Testing Studio: Open"
+        "title": "ApiDiya: Open"
       }
     ],
     "views": {
       "apiStudio": [
         {
           "id": "apiStudio.main",
-          "name": "API Testing Studio"
+          "name": "ApiDiya"
         }
       ]
     },
@@ -26,7 +26,7 @@
         {
           "icon": "media/api.svg",
           "id": "apiStudio",
-          "title": "API Testing Studio"
+          "title": "ApiDiya"
         }
       ]
     }
@@ -38,7 +38,7 @@
     "@vscode/vsce": "^2.26.0",
     "typescript": "^5.0.0"
   },
-  "displayName": "API Testing Studio",
+  "displayName": "ApiDiya",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -50,7 +50,7 @@
     "compile": "tsc -p ./",
     "package": "vsce package"
   },
-  "version": "0.1.3",
+  "version": "0.2.1",
   "keywords": [
     "api",
     "rest",
@@ -58,7 +58,8 @@
     "testing",
     "collections",
     "environments",
-    "antigravity"
+    "antigravity",
+    "apidiya"
   ],
   "icon": "media/icon.png"
 }

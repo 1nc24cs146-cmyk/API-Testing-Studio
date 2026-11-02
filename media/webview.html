@@ -18,8 +18,9 @@ pre{background:#020617;border:1px solid #334155;border-radius:6px;padding:8px;wh
 </style>
 </head>
 <body>
-<h2>API Testing Studio <span class="small">v0.1</span></h2>
-<p class="small">Send requests, save collections, switch environments. Secrets are never shown in full in History.</p>
+<h2>ApiDiya <span class="small">v0.2.1</span></h2>
+<p class="small">Send requests, save collections, switch environments. Secrets are never shown in full in History. New in v0.2: assertions, test suites, import/export, and a local mock server.</p>
+<p class="small"><b>Privacy:</b> everything ApiDiya stores stays on this device only — collections, environments, suites, test runs, mocks and history in local editor storage (never synced to a cloud), and saved auth tokens in your operating system's keychain. No account, no cloud, no telemetry. The only network traffic is the request you send, to the URL you typed.</p>
 
 <h3>Environment</h3>
 <select id="envSelect"></select>
@@ -66,17 +67,63 @@ pre{background:#020617;border:1px solid #334155;border-radius:6px;padding:8px;wh
 <button id="clearHist" class="secondary">Clear history</button>
 <div id="history"></div>
 
+<h3>Assertions (for the request above)</h3>
+<p class="small">Assertions are checked as data only — no test script is ever run. Save the request to keep its assertions.</p>
+<div class="row">
+<select id="asKind"><option value="status">Status equals</option><option value="timeUnder">Response time under (ms)</option><option value="jsonEquals">JSON value equals</option><option value="jsonContains">JSON value contains</option><option value="headerEquals">Header equals</option><option value="headerContains">Header contains</option><option value="bodyContains">Body contains</option></select>
+<input id="asPath" placeholder="JSON path, e.g. user.name (for JSON kinds)">
+</div>
+<div class="row"><input id="asHeader" placeholder="Header name (for header kinds)"><input id="asExpected" placeholder="Expected value"></div>
+<button id="addAs">Add assertion</button><button id="runTest">Run test</button><button id="genAs" class="secondary">Generate from last response</button>
+<div id="assertions"></div>
+<div id="testResult"></div>
+
+<h3>Test suites</h3>
+<p class="small">Tick requests, name the suite, save it, then run it. A suite run uses each saved request as stored.</p>
+<input id="suiteName" placeholder="Suite name">
+<div id="suiteBuilder"></div>
+<button id="saveSuite">Save suite</button>
+<div id="suites"></div>
+<h3>Recent test runs</h3>
+<div id="testRuns"></div>
+
+<h3>Import / Export</h3>
+<p class="small">Export is ApiDiya JSON. Import accepts ApiDiya JSON, a Postman v2.1 collection, or an OpenAPI 3 JSON document.</p>
+<div class="row"><select id="exportCol"></select><button id="exportBtn" class="secondary">Export collection</button></div>
+<textarea id="exportText" placeholder="Exported JSON appears here. Copy it, or paste JSON below and import it." style="min-height:100px"></textarea>
+<button id="importBtn">Import pasted JSON</button>
+<div id="importResult" class="small"></div>
+
+<h3>Local mock server</h3>
+<p class="small">Serves only the mocks you add below, on your own machine. Start it, then point a request at http://localhost:PORT/your-path.</p>
+<div class="row"><input id="mockPort" value="3101"><button id="startMock">Start mock server</button><button id="stopMock" class="secondary">Stop</button></div>
+<div id="mockStatus" class="small">Mock server stopped.</div>
+<div class="row">
+<select id="mockMethod"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select>
+<input id="mockPath" placeholder="/users/1">
+<input id="mockStatusCode" placeholder="Status, e.g. 200" value="200">
+</div>
+<textarea id="mockBody" placeholder='Mock response body, e.g. {"id": 1, "name": "Mock User"}'></textarea>
+<button id="addMock" class="secondary">Add mock</button>
+<div id="mocks"></div>
+
 <script nonce="__NONCE__">
 const vscode = acquireVsCodeApi();
-let state = null, currentId = null;
+let state = null, currentId = null, currentAssertions = [], lastResult = null;
 const $ = (id) => document.getElementById(id);
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function currentRequest(){
   return { id: currentId, name: $('reqName').value || 'Untitled Request', method: $('method').value,
     url: $('url').value, headersText: $('headers').value, queryText: $('query').value,
     authType: $('authType').value, authValue: $('authValue').value, authKeyName: $('authKeyName').value,
-    body: $('body').value, collectionId: $('saveCol').value };
+    body: $('body').value, collectionId: $('saveCol').value, assertions: currentAssertions };
 }
+function renderAssertions(){
+  $('assertions').innerHTML = currentAssertions.map((a, i) =>
+    '<div class="item">' + esc(a.kind) + (a.path ? ' ' + esc(a.path) : '') + (a.headerName ? ' ' + esc(a.headerName) : '') +
+    ' = ' + esc(a.expected) + ' <button class="secondary" onclick="delAs(' + i + ')">Delete</button></div>').join('') || '<p class="small">No assertions yet.</p>';
+}
+window.delAs = (i) => { currentAssertions.splice(i, 1); renderAssertions(); };
 function render(){
   if (!state) return;
   $('envSelect').innerHTML = state.environments.map(e => '<option value="' + e.id + '">' + esc(e.name) + '</option>').join('');
@@ -92,6 +139,21 @@ function render(){
     '<div class="item">' + esc(h.method) + ' ' + esc(h.url) + ' — ' + (h.status == null ? 'Error' : h.status) +
     ' · ' + h.durationMs + 'ms · ' + esc(h.executedAt) +
     ' <button class="secondary" onclick="rerun(\'' + h.id + '\')">Re-run</button></div>').join('') || '<p class="small">No history yet.</p>';
+  renderAssertions();
+  $('suiteBuilder').innerHTML = state.collections.map(c =>
+    '<div class="col">' + esc(c.name) + '</div>' +
+    c.requests.map(r => '<div class="item"><label><input type="checkbox" class="suiteReq" value="' + r.id + '" style="width:auto"> ' + esc(r.method) + ' ' + esc(r.name) + '</label></div>').join('')
+  ).join('');
+  $('suites').innerHTML = (state.suites || []).map(s =>
+    '<div class="item">' + esc(s.name) + ' (' + s.requestIds.length + ' requests) ' +
+    '<button onclick="runSuite(\'' + s.id + '\')">Run suite</button> ' +
+    '<button class="secondary" onclick="delSuite(\'' + s.id + '\')">Delete</button></div>').join('') || '<p class="small">No suites yet.</p>';
+  $('testRuns').innerHTML = (state.testRuns || []).map(t =>
+    '<div class="item">' + esc(t.suiteName) + ' — ' + t.passed + ' passed, ' + t.failed + ' failed · ' + esc(t.executedAt) + '</div>').join('') || '<p class="small">No test runs yet.</p>';
+  $('exportCol').innerHTML = state.collections.map(c => '<option value="' + c.id + '">' + esc(c.name) + '</option>').join('');
+  $('mocks').innerHTML = (state.mocks || []).map(m =>
+    '<div class="item">' + esc(m.method) + ' ' + esc(m.path) + ' → ' + m.status +
+    ' <button class="secondary" onclick="delMock(\'' + m.id + '\')">Delete</button></div>').join('') || '<p class="small">No mocks yet.</p>';
 }
 window.loadReq = (colId, reqId) => {
   const col = state.collections.find(c => c.id === colId);
@@ -101,14 +163,36 @@ window.loadReq = (colId, reqId) => {
   $('headers').value = r.headersText; $('query').value = r.queryText; $('authType').value = r.authType;
   $('authValue').value = ''; $('authKeyName').value = r.authKeyName || 'X-API-Key'; $('body').value = r.body;
   $('saveCol').value = colId;
+  currentAssertions = r.assertions ? r.assertions.slice() : [];
+  renderAssertions();
 };
 window.delCol = (id) => vscode.postMessage({ type: 'deleteCollection', id });
 window.rerun = (id) => vscode.postMessage({ type: 'rerunHistory', id });
+window.runSuite = (id) => vscode.postMessage({ type: 'runSuite', id });
+window.delSuite = (id) => vscode.postMessage({ type: 'deleteSuite', id });
+window.delMock = (id) => vscode.postMessage({ type: 'deleteMock', id });
+$('addAs').onclick = () => {
+  const kind = $('asKind').value, expected = $('asExpected').value;
+  if (!expected) return;
+  currentAssertions.push({ id: 'as_' + Date.now(), kind: kind, path: $('asPath').value || undefined, headerName: $('asHeader').value || undefined, expected: expected });
+  $('asExpected').value = ''; renderAssertions();
+};
+$('runTest').onclick = () => vscode.postMessage({ type: 'runTest', request: currentRequest() });
+$('genAs').onclick = () => { if (lastResult) vscode.postMessage({ type: 'generateAssertions', result: lastResult }); };
+$('saveSuite').onclick = () => {
+  const ids = Array.prototype.slice.call(document.querySelectorAll('.suiteReq:checked')).map(e => e.value);
+  if ($('suiteName').value.trim() && ids.length) vscode.postMessage({ type: 'createSuite', name: $('suiteName').value.trim(), requestIds: ids });
+};
+$('exportBtn').onclick = () => vscode.postMessage({ type: 'exportCollection', id: $('exportCol').value });
+$('importBtn').onclick = () => vscode.postMessage({ type: 'importCollection', text: $('exportText').value });
+$('addMock').onclick = () => vscode.postMessage({ type: 'addMock', mock: { method: $('mockMethod').value, path: $('mockPath').value, status: $('mockStatusCode').value, body: $('mockBody').value } });
+$('startMock').onclick = () => vscode.postMessage({ type: 'startMock', port: $('mockPort').value });
+$('stopMock').onclick = () => vscode.postMessage({ type: 'stopMock' });
 $('send').onclick = () => vscode.postMessage({ type: 'sendRequest', request: currentRequest() });
 $('saveReq').onclick = () => vscode.postMessage({ type: 'saveRequest', request: currentRequest() });
 $('dupReq').onclick = () => vscode.postMessage({ type: 'duplicateRequest', request: currentRequest() });
 $('delReq').onclick = () => { vscode.postMessage({ type: 'deleteRequest', request: currentRequest() }); currentId = null; };
-$('newReq').onclick = () => { currentId = null; $('reqName').value = 'Untitled Request'; $('method').value = 'GET'; $('url').value = '{{baseUrl}}/users'; $('headers').value = ''; $('query').value = ''; $('authType').value = 'none'; $('authValue').value = ''; $('body').value = ''; };
+$('newReq').onclick = () => { currentId = null; currentAssertions = []; renderAssertions(); $('reqName').value = 'Untitled Request'; $('method').value = 'GET'; $('url').value = '{{baseUrl}}/users'; $('headers').value = ''; $('query').value = ''; $('authType').value = 'none'; $('authValue').value = ''; $('body').value = ''; };
 $('newCol').onclick = () => { if ($('newColName').value.trim()) vscode.postMessage({ type: 'newCollection', name: $('newColName').value.trim() }); };
 $('saveEnv').onclick = () => vscode.postMessage({ type: 'saveEnvVars', envId: $('envSelect').value, varsText: $('envVars').value });
 $('envSelect').onchange = () => vscode.postMessage({ type: 'setActiveEnv', envId: $('envSelect').value });
@@ -118,10 +202,23 @@ window.addEventListener('message', (e) => {
   const m = e.data;
   if (m.type === 'state') { state = m.state; render(); }
   if (m.type === 'response') {
-    if (m.error) { $('respMeta').textContent = 'Error: ' + m.error; $('respBody').textContent = ''; $('respHeaders').textContent = ''; }
-    else { $('respMeta').textContent = m.result.status + ' ' + m.result.statusText + ' · ' + m.result.timeMs + 'ms · ' + m.result.sizeBytes + ' bytes';
+    if (m.error) { lastResult = null; $('respMeta').textContent = 'Error: ' + m.error; $('respBody').textContent = ''; $('respHeaders').textContent = ''; }
+    else { lastResult = m.result; $('respMeta').textContent = m.result.status + ' ' + m.result.statusText + ' · ' + m.result.timeMs + 'ms · ' + m.result.sizeBytes + ' bytes';
       $('respBody').textContent = m.prettyBody; $('respHeaders').textContent = m.result.headers.map(h => h.key + ': ' + h.value).join('\n'); }
   }
+  if (m.type === 'testResult') {
+    $('testResult').innerHTML = m.error ? '<p>Test error: ' + esc(m.error) + '</p>'
+      : '<p><b>' + esc(m.requestName) + ': ' + m.passed + ' passed, ' + m.failed + ' failed</b></p>' +
+        m.details.map(d => '<div class="small">' + (d.passed ? '✓ ' : '✗ ') + esc(d.message) + '</div>').join('');
+  }
+  if (m.type === 'suiteResult') {
+    $('testResult').innerHTML = '<p><b>Suite ' + esc(m.suiteName) + ': ' + m.passed + ' passed, ' + m.failed + ' failed</b></p>' +
+      m.results.map(r => '<div class="small">' + esc(r.requestName) + ' — ' + r.passed + ' passed, ' + r.failed + ' failed' + (r.error ? ' (error: ' + esc(r.error) + ')' : '') + '</div>').join('');
+  }
+  if (m.type === 'generatedAssertions') { currentAssertions = m.assertions; renderAssertions(); }
+  if (m.type === 'exportResult') { $('exportText').value = m.json; $('importResult').textContent = 'Exported. Copy the JSON above.'; }
+  if (m.type === 'importResult') { $('importResult').textContent = m.ok ? ('Imported ' + m.count + ' collection(s): ' + m.names.join(', ')) : ('Import failed: ' + m.error); }
+  if (m.type === 'mockStatus') { $('mockStatus').textContent = m.error ? ('Mock server error: ' + m.error) : (m.running ? ('Mock server running on http://localhost:' + m.port) : 'Mock server stopped.'); }
 });
 vscode.postMessage({ type: 'ready' });
 </script>

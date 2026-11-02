@@ -1,6 +1,6 @@
 # Skill: API Testing and Assertions
 
-Status: Planned for v0.2 — NOT implemented in v0.1.2. Do not claim these features exist yet.
+Status: Implemented in v0.2.0. Assertions, suites and test runs are in the sidebar; schema validation is not yet included.
 
 ## Planned scope
 - Status-code validation, response-time validation, JSON property validation, header validation, and schema validation.

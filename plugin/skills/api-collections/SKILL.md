@@ -1,6 +1,6 @@
 # Skill: API Collections
 
-Status: Implemented in API Testing Studio v0.1.2 (sidebar webview, persisted in editor storage).
+Status: Implemented in ApiDiya v0.1.2 (sidebar webview, persisted in editor storage).
 
 ## When to use
 When requests need to be saved, reused, and organised instead of retyped every time.

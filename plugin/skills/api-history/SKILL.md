@@ -1,6 +1,6 @@
 # Skill: API Request History
 
-Status: Implemented in API Testing Studio v0.1.2 (sidebar webview).
+Status: Implemented in ApiDiya v0.1.2 (sidebar webview).
 
 ## When to use
 When a developer wants to re-run, check, or debug a request they already sent.

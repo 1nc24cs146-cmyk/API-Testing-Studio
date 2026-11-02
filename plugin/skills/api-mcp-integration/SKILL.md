@@ -1,6 +1,6 @@
 # Skill: Antigravity MCP Integration
 
-Status: Planned for v0.2 — NOT implemented in v0.1.2. Do not claim these MCP tools exist yet.
+Status: Still planned — NOT implemented in v0.2.0. Do not claim these MCP tools exist yet. v0.2.0 covers assertions, suites, import/export and the mock server; the MCP server needs editor MCP-host wiring and is planned next.
 
 ## Planned MCP tools
 - `api_send_request` — execute an HTTP request
