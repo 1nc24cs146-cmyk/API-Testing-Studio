@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-__NONCE__';">
+<style>
+body{background:#0f172a;color:#e2e8f0;font-family:system-ui,sans-serif;font-size:13px;margin:0;padding:10px}
+h2{font-size:15px;margin:6px 0;color:#2dd4bf} h3{font-size:13px;margin:14px 0 6px;color:#94a3b8}
+input,select,textarea{width:100%;box-sizing:border-box;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:6px;margin:3px 0}
+textarea{min-height:60px;font-family:monospace;font-size:12px}
+button{background:#0e7490;color:#fff;border:0;border-radius:6px;padding:6px 10px;margin:3px 3px 3px 0;cursor:pointer}
+button.secondary{background:#334155}
+.row{display:flex;gap:6px}.row>*{flex:1}
+.item{padding:5px 6px;border-radius:6px;cursor:pointer}.item:hover{background:#1e293b}
+.col{font-weight:bold;color:#f8fafc;margin-top:8px}
+pre{background:#020617;border:1px solid #334155;border-radius:6px;padding:8px;white-space:pre-wrap;word-break:break-all;font-size:12px;max-height:300px;overflow:auto}
+.small{color:#94a3b8;font-size:12px}
+</style>
+</head>
+<body>
+<h2>API Testing Studio <span class="small">v0.1</span></h2>
+<p class="small">Send requests, save collections, switch environments. Secrets are never shown in full in History.</p>
+
+<h3>Environment</h3>
+<select id="envSelect"></select>
+<label class="small">Variables for this environment (one per line, key=value):</label>
+<textarea id="envVars"></textarea>
+<button id="saveEnv">Save environment variables</button>
+
+<h3>Collections</h3>
+<div class="row"><input id="newColName" placeholder="New collection name"><button id="newCol">Create</button></div>
+<div id="collections"></div>
+
+<h3>Request</h3>
+<input id="reqName" placeholder="Request name">
+<div class="row">
+<select id="method"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select>
+<select id="saveCol"></select>
+</div>
+<input id="url" placeholder="{{baseUrl}}/users">
+<label class="small">Auth</label>
+<div class="row">
+<select id="authType"><option value="none">None</option><option value="bearer">Bearer token</option><option value="apiKey">API key</option><option value="basic">Basic (user:password)</option></select>
+<input id="authKeyName" placeholder="Header name (API key)" value="X-API-Key">
+</div>
+<input id="authValue" type="password" placeholder="Token / key (not stored in History)">
+<label class="small">Headers (one per line, Key: value)</label>
+<textarea id="headers" placeholder="Content-Type: application/json"></textarea>
+<label class="small">Query params (one per line, key=value)</label>
+<textarea id="query" placeholder="search=sample"></textarea>
+<label class="small">Body (JSON / raw — sent as data only, never executed)</label>
+<textarea id="body" placeholder="{}"></textarea>
+<div>
+<button id="send">Send</button><button id="saveReq" class="secondary">Save</button>
+<button id="dupReq" class="secondary">Duplicate</button><button id="delReq" class="secondary">Delete</button>
+<button id="newReq" class="secondary">New request</button>
+</div>
+
+<h3>Response</h3>
+<div id="respMeta" class="small">No response yet.</div>
+<pre id="respBody"></pre>
+<pre id="respHeaders"></pre>
+<button id="copyResp" class="secondary">Copy response body</button>
+
+<h3>History</h3>
+<button id="clearHist" class="secondary">Clear history</button>
+<div id="history"></div>
+
+<script nonce="__NONCE__">
+const vscode = acquireVsCodeApi();
+let state = null, currentId = null;
+const $ = (id) => document.getElementById(id);
+function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function currentRequest(){
+  return { id: currentId, name: $('reqName').value || 'Untitled Request', method: $('method').value,
+    url: $('url').value, headersText: $('headers').value, queryText: $('query').value,
+    authType: $('authType').value, authValue: $('authValue').value, authKeyName: $('authKeyName').value,
+    body: $('body').value, collectionId: $('saveCol').value };
+}
+function render(){
+  if (!state) return;
+  $('envSelect').innerHTML = state.environments.map(e => '<option value="' + e.id + '">' + esc(e.name) + '</option>').join('');
+  $('envSelect').value = state.activeEnvId;
+  const env = state.environments.find(e => e.id === state.activeEnvId);
+  $('envVars').value = env ? Object.entries(env.variables).map(([k,v]) => k + '=' + v).join('\n') : '';
+  $('saveCol').innerHTML = state.collections.map(c => '<option value="' + c.id + '">' + esc(c.name) + '</option>').join('');
+  $('collections').innerHTML = state.collections.map(c =>
+    '<div class="col">' + esc(c.name) + ' <button class="secondary" onclick="delCol(\'' + c.id + '\')">Delete</button></div>' +
+    c.requests.map(r => '<div class="item" onclick="loadReq(\'' + c.id + '\',\'' + r.id + '\')">' + esc(r.method) + ' ' + esc(r.name) + '</div>').join('')
+  ).join('');
+  $('history').innerHTML = state.history.slice().reverse().map(h =>
+    '<div class="item">' + esc(h.method) + ' ' + esc(h.url) + ' — ' + (h.status == null ? 'Error' : h.status) +
+    ' · ' + h.durationMs + 'ms · ' + esc(h.executedAt) +
+    ' <button class="secondary" onclick="rerun(\'' + h.id + '\')">Re-run</button></div>').join('') || '<p class="small">No history yet.</p>';
+}
+window.loadReq = (colId, reqId) => {
+  const col = state.collections.find(c => c.id === colId);
+  const r = col && col.requests.find(x => x.id === reqId);
+  if (!r) return;
+  currentId = r.id; $('reqName').value = r.name; $('method').value = r.method; $('url').value = r.url;
+  $('headers').value = r.headersText; $('query').value = r.queryText; $('authType').value = r.authType;
+  $('authValue').value = ''; $('authKeyName').value = r.authKeyName || 'X-API-Key'; $('body').value = r.body;
+  $('saveCol').value = colId;
+};
+window.delCol = (id) => vscode.postMessage({ type: 'deleteCollection', id });
+window.rerun = (id) => vscode.postMessage({ type: 'rerunHistory', id });
+$('send').onclick = () => vscode.postMessage({ type: 'sendRequest', request: currentRequest() });
+$('saveReq').onclick = () => vscode.postMessage({ type: 'saveRequest', request: currentRequest() });
+$('dupReq').onclick = () => vscode.postMessage({ type: 'duplicateRequest', request: currentRequest() });
+$('delReq').onclick = () => { vscode.postMessage({ type: 'deleteRequest', request: currentRequest() }); currentId = null; };
+$('newReq').onclick = () => { currentId = null; $('reqName').value = 'Untitled Request'; $('method').value = 'GET'; $('url').value = '{{baseUrl}}/users'; $('headers').value = ''; $('query').value = ''; $('authType').value = 'none'; $('authValue').value = ''; $('body').value = ''; };
+$('newCol').onclick = () => { if ($('newColName').value.trim()) vscode.postMessage({ type: 'newCollection', name: $('newColName').value.trim() }); };
+$('saveEnv').onclick = () => vscode.postMessage({ type: 'saveEnvVars', envId: $('envSelect').value, varsText: $('envVars').value });
+$('envSelect').onchange = () => vscode.postMessage({ type: 'setActiveEnv', envId: $('envSelect').value });
+$('clearHist').onclick = () => vscode.postMessage({ type: 'clearHistory' });
+$('copyResp').onclick = () => navigator.clipboard.writeText($('respBody').textContent || '');
+window.addEventListener('message', (e) => {
+  const m = e.data;
+  if (m.type === 'state') { state = m.state; render(); }
+  if (m.type === 'response') {
+    if (m.error) { $('respMeta').textContent = 'Error: ' + m.error; $('respBody').textContent = ''; $('respHeaders').textContent = ''; }
+    else { $('respMeta').textContent = m.result.status + ' ' + m.result.statusText + ' · ' + m.result.timeMs + 'ms · ' + m.result.sizeBytes + ' bytes';
+      $('respBody').textContent = m.prettyBody; $('respHeaders').textContent = m.result.headers.map(h => h.key + ': ' + h.value).join('\n'); }
+  }
+});
+vscode.postMessage({ type: 'ready' });
+</script>
+</body>
+</html>

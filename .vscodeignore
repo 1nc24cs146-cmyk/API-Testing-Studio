@@ -1,0 +1,12 @@
+src/**
+tsconfig.json
+.vscode/**
+.gitignore
+.vscodeignore
+node_modules/**
+out/**/*.map
+media/icon-old-teal.png
+media/icon-2.png
+media/icon-512.png
+media/media-generation-*
+media/*.json

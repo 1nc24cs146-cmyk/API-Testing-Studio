@@ -1,0 +1,64 @@
+{
+  "activationEvents": [
+    "onView:apiStudio.main",
+    "onCommand:apiStudio.open"
+  ],
+  "categories": [
+    "Other"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "apiStudio.open",
+        "title": "API Testing Studio: Open"
+      }
+    ],
+    "views": {
+      "apiStudio": [
+        {
+          "id": "apiStudio.main",
+          "name": "API Testing Studio"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "icon": "media/api.svg",
+          "id": "apiStudio",
+          "title": "API Testing Studio"
+        }
+      ]
+    }
+  },
+  "description": "API testing workspace for VS Code and Antigravity",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.26.0",
+    "typescript": "^5.0.0"
+  },
+  "displayName": "API Testing Studio",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "license": "MIT",
+  "main": "./out/extension.js",
+  "name": "api-testing-studio",
+  "publisher": "nitinkumarhiremath",
+  "scripts": {
+    "compile": "tsc -p ./",
+    "package": "vsce package"
+  },
+  "version": "0.1.3",
+  "keywords": [
+    "api",
+    "rest",
+    "http",
+    "testing",
+    "collections",
+    "environments",
+    "antigravity"
+  ],
+  "icon": "media/icon.png"
+}
