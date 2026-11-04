@@ -6,8 +6,8 @@
 **A Postman-style testing workspace for VS Code and Antigravity — send requests, save collections, run test suites, and mock APIs locally, with no cloud and no account.**
 
 [![Open VSX](https://img.shields.io/badge/Open_VSX-apidiya.api--testing--studio-0d9488?style=for-the-badge)](https://open-vsx.org/extension/apidiya/api-testing-studio)
-[![Version](https://img.shields.io/badge/Version-v0.2.1-8b5cf6?style=for-the-badge)](https://github.com/1nc24cs146-cmyk/API-Testing-Studio)
-[![Downloads](https://img.shields.io/badge/Downloads-180-10b981?style=for-the-badge)](https://open-vsx.org/extension/apidiya/api-testing-studio)
+[![Version](https://img.shields.io/badge/Version-v0.2.3-8b5cf6?style=for-the-badge)](https://github.com/1nc24cs146-cmyk/API-Testing-Studio)
+[![Downloads](https://img.shields.io/badge/Downloads-268-10b981?style=for-the-badge)](https://open-vsx.org/extension/apidiya/api-testing-studio)
 [![Privacy](https://img.shields.io/badge/Storage-Local_only-0f172a?style=for-the-badge)](#-privacy--stored-on-your-device-only)
 
 [⬇️ Install](#-install-in-vs-code-or-antigravity) •
@@ -24,8 +24,8 @@
 | | |
 |---|---|
 | **Extension** | `nitinkumarhiremath.api-testing-studio` (this build) — live on Open VSX as `apidiya.api-testing-studio` |
-| **Version** | 0.2.1 on Open VSX (0.2.2 built, with the sidebar download count) |
-| **Downloads** | 180 on Open VSX (4 Nov 2026) |
+| **Version** | 0.2.3 on Open VSX |
+| **Downloads** | 268 on Open VSX (4 Nov 2026) |
 | **Editors** | VS Code and Antigravity — the same VSIX installs in either |
 | **Storage** | Local only. No account, no cloud database, no telemetry, no analytics |
 | **Formerly** | API Testing Studio — same extension, new name; existing installs update normally |
@@ -38,14 +38,20 @@ Original code, built from the PDF spec in the project brief (milestone 1 only). 
 
 1. Open VS Code or Antigravity.
 2. Open Extensions, then `...` (more actions) → **Install from VSIX…**
-3. Choose `apidiya-vscode-0.2.1.vsix / apidiya-antigravity-0.2.1.vsix` from this folder.
+3. Choose `apidiya-vscode-0.2.3.vsix / apidiya-antigravity-0.2.3.vsix` from this folder.
 4. Click the ApiDiya icon in the activity bar, or run the command **ApiDiya: Open** from the Command Palette.
 
 To publish it later, use this same VSIX for both stores: the VS Code Marketplace for VS Code users, and Open VSX for Antigravity users (Antigravity installs from Open VSX, not the VS Code Marketplace).
 
 ## ✨ What it does
 
-### Latest: live download count in the sidebar (v0.2.2)
+### Latest: snippets, WebSocket + SSE, MCP server (v0.2.3)
+
+- Code snippets: one click copies the current request as cURL, JavaScript fetch, or Python (requests). Snippets are generated as text only and include your auth token if one is set — treat a pasted snippet like a password.
+- WebSocket testing: connect to a ws:// or wss:// URL in the sidebar, send messages, and watch replies in the log. SSE testing: start a stream from an http(s) URL and watch events arrive (streamed through the extension host, so the sidebar's content policy stays tight).
+- MCP server: a local Streamable HTTP server on 127.0.0.1 (default port 3102, started from the sidebar) exposing four tools — list collections, list requests, send a saved request, send a one-off request. Point an MCP host at `http://localhost:3102/mcp`; tool results never include secrets. Installing ApiDiya does not auto-connect it to any other extension: the host's MCP config must point at this URL, and the server must be running in the editor.
+
+### Live download count in the sidebar (v0.2.2)
 
 - ApiDiya shows its Open VSX download count (labelled 'downloads on Antigravity') at the top of the sidebar, fetched from the registry when the sidebar opens. Note: Antigravity's own Installation panel has no Downloads row and cannot be changed by an extension — the count lives in the sidebar instead.
 
@@ -56,7 +62,7 @@ To publish it later, use this same VSIX for both stores: the VS Code Marketplace
 - Generate assertions from the last response (status + top-level JSON fields).
 - Import collections from ApiDiya JSON, Postman v2.1 JSON, or OpenAPI 3 JSON; export any collection as ApiDiya JSON.
 - Local mock server: add method + path + status + body mocks and serve them on http://localhost:3101 (or your chosen port).
-- Not yet in v0.2.0: a full MCP server and AI-model generation. Those need editor MCP-host wiring and are planned next, not claimed here.
+- Not yet built: AI-model generation. The MCP server in v0.2.3 is the local HTTP server described above, not a stdio server — a separate stdio process could not read the editor's local state.
 
 ### Request builder, collections, history (v0.1.6)
 

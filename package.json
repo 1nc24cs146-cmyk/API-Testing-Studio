@@ -50,7 +50,7 @@
     "compile": "tsc -p ./",
     "package": "vsce package"
   },
-  "version": "0.2.1",
+  "version": "0.2.3",
   "keywords": [
     "api",
     "rest",

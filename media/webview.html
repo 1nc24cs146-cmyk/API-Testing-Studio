@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-__NONCE__';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-__NONCE__'; connect-src ws: wss:;">
 <style>
 body{background:#0f172a;color:#e2e8f0;font-family:system-ui,sans-serif;font-size:13px;margin:0;padding:10px}
 h2{font-size:15px;margin:6px 0;color:#2dd4bf} h3{font-size:13px;margin:14px 0 6px;color:#94a3b8}
@@ -18,8 +18,9 @@ pre{background:#020617;border:1px solid #334155;border-radius:6px;padding:8px;wh
 </style>
 </head>
 <body>
-<h2>ApiDiya <span class="small">v0.2.1</span></h2>
-<p class="small">Send requests, save collections, switch environments. Secrets are never shown in full in History. New in v0.2: assertions, test suites, import/export, and a local mock server.</p>
+<h2>ApiDiya <span class="small">v0.2.3</span></h2>
+<p class="small">Send requests, save collections, switch environments. Secrets are never shown in full in History. New in v0.2.3: code snippets (cURL / fetch / Python), WebSocket + SSE testing, and a local MCP server for AI agents.</p>
+<p class="small" id="dlCount">⬇ <span id="dlNumber">—</span> downloads on Antigravity</p>
 <p class="small"><b>Privacy:</b> everything ApiDiya stores stays on this device only — collections, environments, suites, test runs, mocks and history in local editor storage (never synced to a cloud), and saved auth tokens in your operating system's keychain. No account, no cloud, no telemetry. The only network traffic is the request you send, to the URL you typed.</p>
 
 <h3>Environment</h3>
@@ -56,6 +57,12 @@ pre{background:#020617;border:1px solid #334155;border-radius:6px;padding:8px;wh
 <button id="dupReq" class="secondary">Duplicate</button><button id="delReq" class="secondary">Delete</button>
 <button id="newReq" class="secondary">New request</button>
 </div>
+<p class="small">Code snippet for the request above — one click copies it:</p>
+<div>
+<button id="copyCurl" class="secondary">Copy as cURL</button><button id="copyFetch" class="secondary">Copy as fetch</button><button id="copyPython" class="secondary">Copy as Python</button>
+</div>
+<pre id="snippet"></pre>
+<p class="small" id="snippetNote">Snippets include your auth token if one is set — treat a pasted snippet like a password.</p>
 
 <h3>Response</h3>
 <div id="respMeta" class="small">No response yet.</div>
@@ -106,6 +113,30 @@ pre{background:#020617;border:1px solid #334155;border-radius:6px;padding:8px;wh
 <textarea id="mockBody" placeholder='Mock response body, e.g. {"id": 1, "name": "Mock User"}'></textarea>
 <button id="addMock" class="secondary">Add mock</button>
 <div id="mocks"></div>
+
+<h3>Real-time: WebSocket + SSE</h3>
+<p class="small">WebSocket runs in this panel (your browser's WebSocket); SSE streams through the extension host. Both are for the URL you type, nothing else.</p>
+<label class="small">WebSocket URL (ws:// or wss://)</label>
+<input id="wsUrl" placeholder="wss://echo.example.com or ws://localhost:8080">
+<div class="row"><button id="wsConnect">Connect</button><button id="wsDisconnect" class="secondary">Disconnect</button></div>
+<div class="row"><input id="wsMsg" placeholder="Message to send"><button id="wsSend">Send</button></div>
+<div id="wsStatus" class="small">WebSocket disconnected.</div>
+<div id="wsLog"></div>
+<label class="small">SSE URL (http:// or https://, streamed events)</label>
+<input id="sseUrl" placeholder="https://example.com/events">
+<label class="small">SSE headers (one per line, Key: value)</label>
+<textarea id="sseHeaders" placeholder="Accept: text/event-stream"></textarea>
+<div class="row"><button id="sseStart">Start SSE stream</button><button id="sseStop" class="secondary">Stop</button></div>
+<div id="sseStatus" class="small">SSE stopped.</div>
+<div id="sseLog"></div>
+
+<h3>MCP server (for AI agents)</h3>
+<p class="small">Exposes your collections as MCP tools over Streamable HTTP on your own machine only (127.0.0.1). Start it, then point an MCP host at the URL below. Tool results never include secrets. Note: installing ApiDiya does not auto-connect it to LocalNest — LocalNest's MCP config must point at this URL, and this server must be running in the editor.</p>
+<div class="row"><input id="mcpPort" value="3102"><button id="startMcp">Start MCP server</button><button id="stopMcp" class="secondary">Stop</button></div>
+<div id="mcpStatus" class="small">MCP server stopped.</div>
+<label class="small">MCP host config (Streamable HTTP)</label>
+<textarea id="mcpConfig" readonly style="min-height:80px"></textarea>
+<button id="copyMcpConfig" class="secondary">Copy MCP config</button>
 
 <script nonce="__NONCE__">
 const vscode = acquireVsCodeApi();
@@ -198,6 +229,30 @@ $('saveEnv').onclick = () => vscode.postMessage({ type: 'saveEnvVars', envId: $(
 $('envSelect').onchange = () => vscode.postMessage({ type: 'setActiveEnv', envId: $('envSelect').value });
 $('clearHist').onclick = () => vscode.postMessage({ type: 'clearHistory' });
 $('copyResp').onclick = () => navigator.clipboard.writeText($('respBody').textContent || '');
+$('copyCurl').onclick = () => vscode.postMessage({ type: 'generateSnippet', kind: 'curl', request: currentRequest() });
+$('copyFetch').onclick = () => vscode.postMessage({ type: 'generateSnippet', kind: 'fetch', request: currentRequest() });
+$('copyPython').onclick = () => vscode.postMessage({ type: 'generateSnippet', kind: 'python', request: currentRequest() });
+// WebSocket: runs in this panel via the browser WebSocket API (CSP allows
+// ws:/wss: only). Messages are shown as text; binary frames are labelled.
+let ws = null; const wsLines = [];
+function wsLog(line){ wsLines.push(line); $('wsLog').innerHTML = wsLines.slice(-50).map(l => '<div class="small">' + esc(l) + '</div>').join(''); }
+$('wsConnect').onclick = () => {
+  const url = $('wsUrl').value.trim(); if (!url) return;
+  try { ws = new WebSocket(url); } catch (e) { wsLog('WebSocket error: ' + e.message); return; }
+  ws.onopen = () => { $('wsStatus').textContent = 'WebSocket connected: ' + url; wsLog('Connected.'); };
+  ws.onmessage = (e) => { wsLog('← ' + (typeof e.data === 'string' ? e.data : '[binary message]')); };
+  ws.onerror = () => { wsLog('WebSocket error (check the URL and that the server accepts WebSocket).'); };
+  ws.onclose = () => { $('wsStatus').textContent = 'WebSocket disconnected.'; wsLog('Disconnected.'); ws = null; };
+};
+$('wsDisconnect').onclick = () => { if (ws) ws.close(); };
+$('wsSend').onclick = () => { if (ws && ws.readyState === WebSocket.OPEN && $('wsMsg').value) { ws.send($('wsMsg').value); wsLog('→ ' + $('wsMsg').value); $('wsMsg').value = ''; } };
+const sseLines = [];
+function sseLog(line){ sseLines.push(line); $('sseLog').innerHTML = sseLines.slice(-50).map(l => '<div class="small">' + esc(l) + '</div>').join(''); }
+$('sseStart').onclick = () => vscode.postMessage({ type: 'startSse', url: $('sseUrl').value.trim(), headersText: $('sseHeaders').value });
+$('sseStop').onclick = () => vscode.postMessage({ type: 'stopSse' });
+$('startMcp').onclick = () => vscode.postMessage({ type: 'startMcp', port: $('mcpPort').value });
+$('stopMcp').onclick = () => vscode.postMessage({ type: 'stopMcp' });
+$('copyMcpConfig').onclick = () => navigator.clipboard.writeText($('mcpConfig').value || '');
 window.addEventListener('message', (e) => {
   const m = e.data;
   if (m.type === 'state') { state = m.state; render(); }
@@ -219,6 +274,11 @@ window.addEventListener('message', (e) => {
   if (m.type === 'exportResult') { $('exportText').value = m.json; $('importResult').textContent = 'Exported. Copy the JSON above.'; }
   if (m.type === 'importResult') { $('importResult').textContent = m.ok ? ('Imported ' + m.count + ' collection(s): ' + m.names.join(', ')) : ('Import failed: ' + m.error); }
   if (m.type === 'mockStatus') { $('mockStatus').textContent = m.error ? ('Mock server error: ' + m.error) : (m.running ? ('Mock server running on http://localhost:' + m.port) : 'Mock server stopped.'); }
+  if (m.type === 'snippetResult') { $('snippet').textContent = m.code; navigator.clipboard.writeText(m.code); $('snippetNote').textContent = 'Copied ' + m.kind + ' snippet. Snippets include your auth token if one is set — treat a pasted snippet like a password.'; }
+  if (m.type === 'sseEvent') { sseLog('[' + (m.event.event || 'message') + '] ' + m.event.data); }
+  if (m.type === 'sseStatus') { $('sseStatus').textContent = m.text; }
+  if (m.type === 'mcpStatus') { $('mcpStatus').textContent = m.error ? ('MCP server error: ' + m.error) : (m.running ? ('MCP server running on http://localhost:' + m.port + '/mcp') : 'MCP server stopped.'); $('mcpConfig').value = m.config || ''; }
+  if (m.type === 'downloadCount') { $('dlNumber').textContent = Number(m.count).toLocaleString('en-IN'); }
 });
 vscode.postMessage({ type: 'ready' });
 </script>

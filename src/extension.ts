@@ -4,11 +4,12 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import {
   ApiCollection, ApiRequest, Assertion, Environment, HistoryEntry, HttpResult,
-  MockEndpoint, RequestTestResult, TestSuite, buildFinalUrl, buildHeaders,
-  evaluateAssertions, findMock, generateAssertionsFromResponse, newId,
-  parseImportedCollections, prettyPrint, redactHeaders, seedCollections,
-  seedEnvironments, sendHttp,
+  MockEndpoint, RequestTestResult, SseParser, TestSuite, buildFinalUrl,
+  buildHeaders, evaluateAssertions, findMock, generateAssertionsFromResponse,
+  generateSnippet, newId, parseHeaders, parseImportedCollections, prettyPrint,
+  redactHeaders, seedCollections, seedEnvironments, sendHttp,
 } from './api';
+import { McpContext, handleMcpMessage } from './mcp';
 
 interface TestRun {
   id: string; suiteName: string; executedAt: string;
@@ -38,6 +39,10 @@ class ApiStudioProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined;
   private mockServer: http.Server | undefined;
   private mockPort = 0;
+  // v0.2.3: local MCP server (Streamable HTTP, localhost only) + SSE stream.
+  private mcpServer: http.Server | undefined;
+  private mcpPort = 0;
+  private sseController: AbortController | undefined;
   constructor(private readonly context: vscode.ExtensionContext, private state: State) {}
 
   resolveWebviewView(view: vscode.WebviewView): void {
@@ -47,6 +52,26 @@ class ApiStudioProvider implements vscode.WebviewViewProvider {
     const htmlPath = path.join(this.context.extensionPath, 'media', 'webview.html');
     view.webview.html = fs.readFileSync(htmlPath, 'utf8').replace(/__NONCE__/g, nonce);
     view.webview.onDidReceiveMessage((msg) => { void this.handleMessage(msg); });
+    void this.fetchDownloadCount();
+  }
+
+  // Live download count for the sidebar, shown inside Antigravity/VS Code.
+  // The editor's own Installation panel has no Downloads row and cannot be
+  // changed by an extension, so the count lives here instead. It is read
+  // from the Open VSX registry for this build's own publisher/name (so the
+  // apidiya build shows the live apidiya listing count), and only this one
+  // registry call is made — nothing else about the user is sent anywhere.
+  private async fetchDownloadCount(): Promise<void> {
+    const pkg = this.context.extension.packageJSON as { publisher?: string; name?: string };
+    if (!pkg.publisher || !pkg.name) { return; }
+    try {
+      const res = await fetch(`https://open-vsx.org/api/${pkg.publisher}/${pkg.name}`, { signal: AbortSignal.timeout(10000) });
+      if (!res.ok) { return; }
+      const data = await res.json() as { downloadCount?: number };
+      if (typeof data.downloadCount === 'number') {
+        this.view?.webview.postMessage({ type: 'downloadCount', count: data.downloadCount });
+      }
+    } catch { /* offline or registry unreachable: sidebar keeps its fallback text */ }
   }
 
   private async save(): Promise<void> {
@@ -147,6 +172,97 @@ class ApiStudioProvider implements vscode.WebviewViewProvider {
 
   public stopMockServer(): void {
     if (this.mockServer) { this.mockServer.close(); this.mockServer = undefined; this.mockPort = 0; }
+  }
+
+  public stopMcpServer(): void {
+    if (this.mcpServer) { this.mcpServer.close(); this.mcpServer = undefined; this.mcpPort = 0; }
+  }
+
+  public stopSse(): void {
+    if (this.sseController) { this.sseController.abort(); this.sseController = undefined; }
+  }
+
+  private postMcpStatus(error?: string): void {
+    this.view?.webview.postMessage({
+      type: 'mcpStatus', running: !!this.mcpServer, port: this.mcpPort, error,
+      config: this.mcpServer
+        ? JSON.stringify({ mcpServers: { apidiya: { url: `http://localhost:${this.mcpPort}/mcp` } } }, null, 2)
+        : '',
+    });
+  }
+
+  // MCP context: live local state only. Tool results never include secrets:
+  // list tools return ids/names/methods/URLs, and send uses the keychain
+  // token exactly as a manual Send would — the tool output is status + body.
+  private mcpContext(): McpContext {
+    return {
+      version: '0.2.3',
+      listCollections: () => this.state.collections.map((c) => ({
+        id: c.id, name: c.name,
+        requests: c.requests.map((r) => ({ id: r.id, name: r.name, method: r.method, url: r.url })),
+      })),
+      sendRequest: async (requestId: string) => {
+        const req = this.findRequest(requestId);
+        if (!req) { return { error: 'No saved request with that id' }; }
+        const outcome = await this.executeRequest(req);
+        return 'error' in outcome
+          ? { error: outcome.error }
+          : { status: outcome.result.status, statusText: outcome.result.statusText, bodyText: outcome.result.bodyText };
+      },
+      sendCustom: async (method: string, url: string, headersText: string, body: string) => {
+        const m = (['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const).includes(method.toUpperCase() as ApiRequest['method'])
+          ? (method.toUpperCase() as ApiRequest['method']) : 'GET';
+        const request: ApiRequest = {
+          id: newId('tmp'), name: '', method: m, url, headersText, queryText: '',
+          authType: 'none', authValue: '', authKeyName: 'X-API-Key', body, collectionId: '',
+        };
+        const finalUrl = buildFinalUrl(url, this.envVars(), '');
+        const headers = buildHeaders(request);
+        try {
+          const result = await sendHttp(m, finalUrl, headers, body);
+          return { status: result.status, statusText: result.statusText, bodyText: result.bodyText };
+        } catch (err) {
+          return { error: err instanceof Error ? err.message : String(err) };
+        }
+      },
+    };
+  }
+
+  // SSE streaming on the host (not the webview) so the webview CSP stays
+  // tight: only ws:/wss: are opened there, for WebSocket testing.
+  private async startSse(url: string, headersText: string): Promise<void> {
+    this.stopSse();
+    const controller = new AbortController();
+    this.sseController = controller;
+    const finalUrl = buildFinalUrl(url, this.envVars(), '');
+    const headers = parseHeaders(headersText);
+    try {
+      const res = await fetch(finalUrl, {
+        headers: headers.map((h) => [h.key, h.value] as [string, string]),
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) {
+        this.view?.webview.postMessage({ type: 'sseStatus', text: `SSE error: HTTP ${res.status}` });
+        return;
+      }
+      this.view?.webview.postMessage({ type: 'sseStatus', text: `SSE connected: ${finalUrl}` });
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      const parser = new SseParser();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) { break; }
+        for (const ev of parser.feed(decoder.decode(value, { stream: true }))) {
+          this.view?.webview.postMessage({ type: 'sseEvent', event: ev });
+        }
+      }
+      this.view?.webview.postMessage({ type: 'sseStatus', text: 'SSE stream ended.' });
+    } catch (err) {
+      this.view?.webview.postMessage({
+        type: 'sseStatus',
+        text: controller.signal.aborted ? 'SSE stopped.' : `SSE error: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
   }
 
   private postMockStatus(error?: string): void {
@@ -401,6 +517,74 @@ class ApiStudioProvider implements vscode.WebviewViewProvider {
       case 'stopMock':
         this.stopMockServer(); this.postMockStatus();
         break;
+      case 'generateSnippet': {
+        // Snippets are generated from the request as the user sees it in
+        // the builder. For a saved request the builder blanks auth, so the
+        // keychain secret is used — meaning the snippet WILL contain the
+        // token, and the sidebar warns to treat it like a password.
+        if (!request) { break; }
+        const withAuth = await this.authFor(request);
+        const finalUrl = buildFinalUrl(withAuth.url, this.envVars(), withAuth.queryText);
+        const headers = buildHeaders(withAuth);
+        const kind = (msg.kind === 'fetch' || msg.kind === 'python') ? msg.kind : 'curl';
+        const code = generateSnippet(kind, withAuth.method, finalUrl, headers, withAuth.body);
+        this.view?.webview.postMessage({ type: 'snippetResult', kind, code });
+        break;
+      }
+      case 'startSse':
+        void this.startSse(String(msg.url || ''), String(msg.headersText || ''));
+        break;
+      case 'stopSse':
+        this.stopSse();
+        this.view?.webview.postMessage({ type: 'sseStatus', text: 'SSE stopped.' });
+        break;
+      case 'startMcp': {
+        const port = Number(msg.port) || 3102;
+        if (this.mcpServer) { this.stopMcpServer(); }
+        const ctx = this.mcpContext();
+        const server = http.createServer((reqMsg, res) => {
+          if (reqMsg.method !== 'POST' || (reqMsg.url || '/').split('?')[0] !== '/mcp') {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'ApiDiya MCP server: POST to /mcp only' }));
+            return;
+          }
+          const chunks: Buffer[] = [];
+          let tooBig = false;
+          reqMsg.on('data', (chunk: Buffer) => {
+            if (chunks.reduce((n, c) => n + c.length, 0) + chunk.length > 1_000_000) { tooBig = true; }
+            else { chunks.push(chunk); }
+          });
+          reqMsg.on('end', () => {
+            void (async () => {
+              if (tooBig) {
+                res.writeHead(413, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Request too large' } }));
+                return;
+              }
+              let parsed: unknown;
+              try { parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }));
+                return;
+              }
+              const reply = await handleMcpMessage(parsed as Record<string, unknown>, ctx);
+              if (reply === null) { res.writeHead(202); res.end(); return; }
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify(reply));
+            })();
+          });
+        });
+        server.on('error', (err) => {
+          this.mcpServer = undefined; this.mcpPort = 0;
+          this.postMcpStatus(err instanceof Error ? err.message : String(err));
+        });
+        // Localhost only: this server is for the user's own MCP hosts.
+        server.listen(port, '127.0.0.1', () => { this.mcpServer = server; this.mcpPort = port; this.postMcpStatus(); });
+        break;
+      }
+      case 'stopMcp':
+        this.stopMcpServer(); this.postMcpStatus();
+        break;
       default:
         break;
     }
@@ -432,7 +616,7 @@ export function activate(context: vscode.ExtensionContext): void {
   if (!Array.isArray(state.mocks)) { state.mocks = []; }
   const provider = new ApiStudioProvider(context, state);
   context.subscriptions.push(
-    { dispose: () => provider.stopMockServer() },
+    { dispose: () => { provider.stopMockServer(); provider.stopMcpServer(); provider.stopSse(); } },
     vscode.window.registerWebviewViewProvider('apiStudio.main', provider),
     vscode.commands.registerCommand('apiStudio.open', async () => {
       await vscode.commands.executeCommand('apiStudio.main.focus');

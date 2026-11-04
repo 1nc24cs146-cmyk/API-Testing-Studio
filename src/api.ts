@@ -444,3 +444,99 @@ export function parseImportedCollections(text: string): ApiCollection[] {
 
   throw new Error('Unrecognised format. Export from ApiDiya, or paste a Postman v2.1 collection or an OpenAPI 3 JSON document.');
 }
+
+// ---------------------------------------------------------------------------
+// v0.2.3: code snippets (curl / fetch / Python) and SSE parsing.
+// Pure: no vscode import. Snippets are generated as text only — nothing is
+// executed. A snippet for a request with auth set WILL contain its token,
+// exactly as Postman's code generation does; the sidebar warns about that.
+// ---------------------------------------------------------------------------
+
+export type SnippetKind = 'curl' | 'fetch' | 'python';
+
+/** Wrap a string in POSIX single quotes, escaping embedded single quotes. */
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/** A JSON string literal doubles as a valid JS and Python string literal. */
+function quoted(s: string): string { return JSON.stringify(s); }
+
+/**
+ * Generate a code snippet for a request. `url` must already be final
+ * (variables substituted, query params appended) and `headers` already
+ * built (auth included). Bodies are included only for non-GET/DELETE.
+ */
+export function generateSnippet(kind: SnippetKind, method: HttpMethod, url: string, headers: HeaderPair[], body: string): string {
+  const hasBody = method !== 'GET' && method !== 'DELETE' && body !== '';
+  if (kind === 'curl') {
+    const parts = [`curl -X ${method} ${shellQuote(url)}`];
+    for (const h of headers) { parts.push(`  -H ${shellQuote(`${h.key}: ${h.value}`)}`); }
+    if (hasBody) { parts.push(`  --data ${shellQuote(body)}`); }
+    return parts.join(' \\\n');
+  }
+  if (kind === 'fetch') {
+    const lines = [`const response = await fetch(${quoted(url)}, {`, `  method: ${quoted(method)},`];
+    if (headers.length > 0) {
+      lines.push(`  headers: {${headers.map((h) => `\n    ${quoted(h.key)}: ${quoted(h.value)}`).join(',')}\n  },`);
+    }
+    if (hasBody) { lines.push(`  body: ${quoted(body)},`); }
+    lines.push('});');
+    return lines.join('\n');
+  }
+  // python (requests library)
+  const lines = ['import requests', '', `url = ${quoted(url)}`];
+  if (headers.length > 0) {
+    lines.push(`headers = {${headers.map((h) => `\n    ${quoted(h.key)}: ${quoted(h.value)}`).join(',')}\n}`);
+  } else {
+    lines.push('headers = {}');
+  }
+  lines.push(`response = requests.request(${quoted(method)}, url, headers=headers${hasBody ? `, data=${quoted(body)}` : ''})`);
+  lines.push('print(response.status_code)');
+  lines.push('print(response.text)');
+  return lines.join('\n');
+}
+
+// --- SSE parsing ---------------------------------------------------------
+// Parses a Server-Sent Events stream incrementally: feed() accepts arbitrary
+// chunks (a chunk may split an event) and returns only complete events.
+// Per the SSE spec: lines are field:value (leading space after ':' stripped),
+// ':' lines are comments, a blank line dispatches the event, and data lines
+// join with '\n'.
+
+export interface SseEvent { event: string; data: string; id?: string; }
+
+export class SseParser {
+  private buffer = '';
+  private dataLines: string[] = [];
+  private eventName = 'message';
+  private lastId: string | undefined;
+
+  feed(chunk: string): SseEvent[] {
+    const out: SseEvent[] = [];
+    this.buffer += chunk;
+    let idx: number;
+    while ((idx = this.buffer.indexOf('\n')) >= 0) {
+      let line = this.buffer.slice(0, idx);
+      this.buffer = this.buffer.slice(idx + 1);
+      if (line.endsWith('\r')) { line = line.slice(0, -1); }
+      if (line === '') {
+        if (this.dataLines.length > 0) {
+          out.push({ event: this.eventName, data: this.dataLines.join('\n'), id: this.lastId });
+        }
+        this.dataLines = [];
+        this.eventName = 'message';
+        continue;
+      }
+      if (line.startsWith(':')) { continue; }
+      const colon = line.indexOf(':');
+      const field = colon < 0 ? line : line.slice(0, colon);
+      let value = colon < 0 ? '' : line.slice(colon + 1);
+      if (value.startsWith(' ')) { value = value.slice(1); }
+      if (field === 'data') { this.dataLines.push(value); }
+      else if (field === 'event') { this.eventName = value; }
+      else if (field === 'id' && !value.includes('\0')) { this.lastId = value; }
+    }
+    return out;
+  }
+}
