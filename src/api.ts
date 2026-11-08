@@ -13,6 +13,8 @@ export interface ApiRequest {
   authValue: string; authKeyName: string; body: string;
   collectionId: string;
   assertions?: Assertion[];
+  /** Optional JSON Schema (as text) the response body is validated against. */
+  jsonSchema?: string;
 }
 export interface ApiCollection { id: string; name: string; requests: ApiRequest[]; }
 export interface Environment { id: string; name: string; variables: Record<string, string>; }
@@ -219,7 +221,7 @@ export function emptyRequest(collectionId: string): ApiRequest {
 
 export type AssertionKind =
   | 'status' | 'timeUnder' | 'jsonEquals' | 'jsonContains'
-  | 'headerEquals' | 'headerContains' | 'bodyContains';
+  | 'headerEquals' | 'headerContains' | 'bodyContains' | 'schema';
 
 export interface Assertion {
   id: string;
@@ -300,6 +302,14 @@ export function evaluateAssertion(result: HttpResult, assertion: Assertion): Ass
       case 'bodyContains': {
         const passed = result.bodyText.includes(assertion.expected);
         return { assertion, passed, message: passed ? `body contains '${assertion.expected}'` : `body does not contain '${assertion.expected}'` };
+      }
+      case 'schema': {
+        const checked = validateResponseAgainstSchema(result.bodyText, assertion.expected);
+        if (checked.parseError) { return { assertion, passed: false, message: checked.parseError }; }
+        return {
+          assertion, passed: checked.valid,
+          message: checked.valid ? 'response matches the JSON Schema' : `schema mismatches: ${checked.errors.join('; ')}`,
+        };
       }
       default:
         return { assertion, passed: false, message: 'unknown assertion kind' };
@@ -402,6 +412,7 @@ export function parseImportedCollections(text: string): ApiCollection[] {
           authType: 'none', authValue: '', authKeyName: 'X-API-Key',
           body: String(r.body || ''), collectionId: id,
           assertions: Array.isArray(r.assertions) ? (r.assertions as Assertion[]) : undefined,
+          jsonSchema: typeof r.jsonSchema === 'string' && r.jsonSchema.trim() ? r.jsonSchema : undefined,
         });
       }
       collections.push({ id, name: String(raw.name || 'Imported Collection'), requests });
@@ -539,4 +550,341 @@ export class SseParser {
     }
     return out;
   }
+}
+
+// ---------------------------------------------------------------------------
+// v0.2.5: Markdown documentation for a collection (used by the MCP
+// apidiya_generate_docs tool). Pure: data in, Markdown text out. Auth is
+// described by type only — no token or key value is ever included.
+// ---------------------------------------------------------------------------
+
+/** Generate Markdown docs for one collection: requests, methods, URLs, auth type. */
+export function generateCollectionDocs(collection: ApiCollection): string {
+  const lines = [`# ${collection.name}`, ''];
+  if (collection.requests.length === 0) {
+    lines.push('_This collection has no requests yet._');
+    return lines.join('\n');
+  }
+  lines.push('| Request | Method | URL | Auth |');
+  lines.push('|---|---|---|---|');
+  for (const r of collection.requests) {
+    lines.push(`| ${r.name} | ${r.method} | \`${r.url}\` | ${r.authType} |`);
+  }
+  lines.push('');
+  for (const r of collection.requests) {
+    lines.push(`## ${r.name}`);
+    lines.push('');
+    lines.push(`- **Method:** ${r.method}`);
+    lines.push(`- **URL:** \`${r.url}\``);
+    lines.push(`- **Auth:** ${r.authType}`);
+    // Redact secret header values: a token pasted into the headers box
+    // must never end up in generated docs.
+    const headers = redactHeaders(parseHeaders(r.headersText));
+    if (headers.length > 0) {
+      lines.push(`- **Headers:** ${headers.map((h) => `${h.key}: ${h.value}`).join(', ')}`);
+    }
+    if (r.queryText.trim()) {
+      lines.push(`- **Query params:** ${r.queryText.split(/\r?\n/).filter(Boolean).join(', ')}`);
+    }
+    if (r.body.trim()) {
+      lines.push('- **Body:**');
+      lines.push('```json');
+      lines.push(r.body);
+      lines.push('```');
+    }
+    if (r.assertions && r.assertions.length > 0) {
+      lines.push(`- **Assertions:** ${r.assertions.length} (${r.assertions.map((a) => a.kind).join(', ')})`);
+    }
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// v0.3.0: JSON Schema response validation, data-driven collection runs,
+// and import from cURL. All pure: no vscode import, nothing executed.
+// Schemas and data files are treated as data only. A data row's values are
+// substituted into {{variables}} exactly like environment variables, and
+// never stored anywhere — rows live only for the duration of the run.
+// ---------------------------------------------------------------------------
+
+// --- JSON Schema validation ----------------------------------------------
+// A small, dependency-free validator for the subset of JSON Schema most
+// APIs actually use: type, required, properties, items, enum, minimum /
+// maximum, minLength / maxLength, pattern, minItems / maxItems, and
+// additionalProperties: false. Unsupported keywords ($ref, allOf/anyOf/
+// oneOf, format) are reported as a mismatch rather than silently ignored,
+// so a schema that looks validated is never quietly half-checked.
+
+function schemaTypeOf(value: unknown): string {
+  if (value === null) { return 'null'; }
+  if (Array.isArray(value)) { return 'array'; }
+  if (typeof value === 'number') { return Number.isInteger(value) ? 'integer' : 'number'; }
+  return typeof value;
+}
+
+function typeMatches(value: unknown, expected: string): boolean {
+  if (expected === 'number') { return typeof value === 'number'; }
+  if (expected === 'integer') { return typeof value === 'number' && Number.isInteger(value); }
+  return schemaTypeOf(value) === expected;
+}
+
+/** Validate a parsed JSON value against a parsed schema. Returns mismatch messages (empty = valid). */
+export function validateJsonSchema(value: unknown, schema: unknown, path = '$'): string[] {
+  const errors: string[] = [];
+  if (schema === true) { return errors; }
+  if (schema === false) { return [`${path}: value is not allowed by this schema`]; }
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
+    return [`${path}: schema is not a valid JSON Schema object`];
+  }
+  const s = schema as Record<string, unknown>;
+
+  if (s.$ref !== undefined) { errors.push(`${path}: $ref is not supported — inline the schema instead`); }
+  for (const kw of ['allOf', 'anyOf', 'oneOf', 'not']) {
+    if (s[kw] !== undefined) { errors.push(`${path}: ${kw} is not supported by this validator`); }
+  }
+  if (s.type !== undefined) {
+    const types = Array.isArray(s.type) ? (s.type as string[]) : [s.type as string];
+    if (!types.some((t) => typeMatches(value, t))) {
+      errors.push(`${path}: expected type ${types.join(' or ')}, got ${schemaTypeOf(value)}`);
+      return errors; // Further keyword checks would be misleading on the wrong type.
+    }
+  }
+  if (Array.isArray(s.enum) && !s.enum.some((v) => JSON.stringify(v) === JSON.stringify(value))) {
+    errors.push(`${path}: value ${JSON.stringify(value)} is not one of ${JSON.stringify(s.enum)}`);
+  }
+  if (typeof value === 'number') {
+    if (typeof s.minimum === 'number' && value < s.minimum) { errors.push(`${path}: ${value} is below minimum ${s.minimum}`); }
+    if (typeof s.maximum === 'number' && value > s.maximum) { errors.push(`${path}: ${value} is above maximum ${s.maximum}`); }
+    if (typeof s.exclusiveMinimum === 'number' && value <= s.exclusiveMinimum) { errors.push(`${path}: ${value} is not above exclusiveMinimum ${s.exclusiveMinimum}`); }
+    if (s.exclusiveMinimum === true && typeof s.minimum === 'number' && value <= s.minimum) { errors.push(`${path}: ${value} is not above minimum ${s.minimum}`); }
+    if (typeof s.exclusiveMaximum === 'number' && value >= s.exclusiveMaximum) { errors.push(`${path}: ${value} is not below exclusiveMaximum ${s.exclusiveMaximum}`); }
+    if (s.exclusiveMaximum === true && typeof s.maximum === 'number' && value >= s.maximum) { errors.push(`${path}: ${value} is not below maximum ${s.maximum}`); }
+  }
+  if (typeof value === 'string') {
+    if (typeof s.minLength === 'number' && value.length < s.minLength) { errors.push(`${path}: string length ${value.length} is below minLength ${s.minLength}`); }
+    if (typeof s.maxLength === 'number' && value.length > s.maxLength) { errors.push(`${path}: string length ${value.length} exceeds maxLength ${s.maxLength}`); }
+    if (typeof s.pattern === 'string') {
+      try {
+        if (!new RegExp(s.pattern).test(value)) { errors.push(`${path}: "${value}" does not match pattern ${s.pattern}`); }
+      } catch { errors.push(`${path}: schema pattern ${s.pattern} is not a valid regular expression`); }
+    }
+  }
+  if (Array.isArray(value)) {
+    if (typeof s.minItems === 'number' && value.length < s.minItems) { errors.push(`${path}: array has ${value.length} item(s), below minItems ${s.minItems}`); }
+    if (typeof s.maxItems === 'number' && value.length > s.maxItems) { errors.push(`${path}: array has ${value.length} item(s), above maxItems ${s.maxItems}`); }
+    if (s.items && typeof s.items === 'object') {
+      value.forEach((item, i) => errors.push(...validateJsonSchema(item, s.items, `${path}[${i}]`)));
+    }
+  }
+  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    const obj = value as Record<string, unknown>;
+    if (Array.isArray(s.required)) {
+      for (const key of s.required as string[]) {
+        if (!(key in obj) || obj[key] === undefined) { errors.push(`${path}: missing required property '${key}'`); }
+      }
+    }
+    const props = (s.properties && typeof s.properties === 'object' ? s.properties : {}) as Record<string, unknown>;
+    for (const [key, sub] of Object.entries(props)) {
+      if (key in obj) { errors.push(...validateJsonSchema(obj[key], sub, `${path}.${key}`)); }
+    }
+    if (s.additionalProperties === false) {
+      for (const key of Object.keys(obj)) {
+        if (!(key in props)) { errors.push(`${path}: additional property '${key}' is not allowed`); }
+      }
+    }
+  }
+  return errors;
+}
+
+export interface SchemaCheckResult { valid: boolean; errors: string[]; parseError?: string; }
+
+/** Validate a response body against a JSON Schema given as text. Never throws. */
+export function validateResponseAgainstSchema(bodyText: string, schemaText: string): SchemaCheckResult {
+  let parsedBody: unknown;
+  try { parsedBody = JSON.parse(bodyText); } catch { return { valid: false, errors: [], parseError: 'response body is not valid JSON, so it cannot be checked against a JSON Schema' }; }
+  let schema: unknown;
+  try { schema = JSON.parse(schemaText); } catch { return { valid: false, errors: [], parseError: 'the JSON Schema itself is not valid JSON — fix the schema and try again' }; }
+  const errors = validateJsonSchema(parsedBody, schema);
+  return { valid: errors.length === 0, errors };
+}
+
+/** Evaluate the request's attached JSON Schema (if any) against a response. Returns null when no schema is set. */
+export function evaluateJsonSchemaAssertion(result: HttpResult, jsonSchema: string | undefined): AssertionResult | null {
+  if (!jsonSchema || !jsonSchema.trim()) { return null; }
+  const schemaAssertion: Assertion = { id: 'as_schema', kind: 'schema', expected: jsonSchema };
+  return evaluateAssertion(result, schemaAssertion);
+}
+
+// --- Data-driven runs ------------------------------------------------------
+// Parse a data file into rows: CSV (first line = headers) or JSON (an array
+// of objects, { "rows": [...] }, or a single object = one row). All values
+// become strings, because they are substituted into {{variables}} as text.
+// Throws a plain Error with a readable message on bad input.
+
+function parseCsvLine(line: string): string[] {
+  const out: string[] = [];
+  let cur = '', inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') { cur += '"'; i++; }
+        else { inQuotes = false; }
+      } else { cur += ch; }
+    } else if (ch === '"') { inQuotes = true; }
+    else if (ch === ',') { out.push(cur); cur = ''; }
+    else { cur += ch; }
+  }
+  out.push(cur);
+  return out.map((v) => v.trim());
+}
+
+export function parseDataRows(text: string): Array<Record<string, string>> {
+  const trimmed = text.trim();
+  if (!trimmed) { throw new Error('The data file is empty. Paste CSV (first line = column names) or a JSON array of objects.'); }
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    let json: unknown;
+    try { json = JSON.parse(trimmed); } catch { throw new Error('That text starts like JSON but is not valid JSON.'); }
+    let arr: unknown = json;
+    if (json && typeof json === 'object' && !Array.isArray(json)) {
+      const obj = json as Record<string, unknown>;
+      if (Array.isArray(obj.rows)) { arr = obj.rows; }
+      else { arr = [json]; }
+    }
+    if (!Array.isArray(arr)) { throw new Error('JSON data must be an array of objects, or an object with a "rows" array.'); }
+    if (arr.length === 0) { throw new Error('The JSON data has no rows.'); }
+    return arr.map((row, i) => {
+      if (!row || typeof row !== 'object' || Array.isArray(row)) {
+        throw new Error(`Row ${i + 1} is not an object — every row must be an object of column names to values.`);
+      }
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(row as Record<string, unknown>)) {
+        out[k] = v === null || v === undefined ? '' : typeof v === 'string' ? v : JSON.stringify(v);
+      }
+      return out;
+    });
+  }
+  // CSV
+  const lines = trimmed.split(/\r?\n/).filter((l) => l.trim() !== '');
+  if (lines.length < 2) { throw new Error('CSV data needs a header line and at least one data row.'); }
+  const headers = parseCsvLine(lines[0]);
+  if (headers.some((h) => !h)) { throw new Error('CSV header line has an empty column name.'); }
+  return lines.slice(1).map((line, i) => {
+    const cells = parseCsvLine(line);
+    if (cells.length !== headers.length) {
+      throw new Error(`CSV row ${i + 2} has ${cells.length} value(s) but the header has ${headers.length} column(s).`);
+    }
+    const row: Record<string, string> = {};
+    headers.forEach((h, j) => { row[h] = cells[j]; });
+    return row;
+  });
+}
+
+// --- Import from cURL ------------------------------------------------------
+// Parse a cURL command into a request. This is the reverse of the code
+// snippet export: paste what Postman / a browser / a doc gave you and get
+// the request back. Tokenising honours single quotes, double quotes,
+// backslash escapes and line continuations, so pasted multi-line commands
+// work as-is. Auth from -u/--user becomes Basic auth; --data without -X
+// implies POST, as curl does. Unknown flags are skipped, never executed.
+
+function tokenizeCurl(text: string): string[] {
+  const tokens: string[] = [];
+  let cur = '', inSingle = false, inDouble = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '\\' && !inSingle) {
+      const next = text[i + 1];
+      if (next === '\n' || next === '\r') { i++; continue; } // line continuation
+      if (next !== undefined) { cur += next; i++; continue; }
+      continue;
+    }
+    if (ch === "'" && !inDouble) { inSingle = !inSingle; continue; }
+    if (ch === '"' && !inSingle) { inDouble = !inDouble; continue; }
+    if (!inSingle && !inDouble && (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r')) {
+      if (cur !== '') { tokens.push(cur); cur = ''; }
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur !== '') { tokens.push(cur); }
+  return tokens;
+}
+
+export interface ParsedCurl {
+  method: HttpMethod; url: string; headersText: string;
+  body: string; authType: 'none' | 'basic'; authValue: string;
+}
+
+export function parseCurlCommand(text: string): ParsedCurl {
+  const trimmed = text.trim();
+  if (!trimmed) { throw new Error('Paste a cURL command first.'); }
+  const tokens = tokenizeCurl(trimmed);
+  const start = tokens[0] === 'curl' ? 1 : 0;
+  if (tokens.length <= start) { throw new Error('That does not look like a cURL command — it should start with curl and include a URL.'); }
+  // Flags that take a separate value argument (curl -X POST style).
+  const valueFlags = new Set(['-X', '--request', '-H', '--header', '-d', '--data', '--data-raw', '--data-binary', '--data-ascii', '--json', '-u', '--user', '-A', '--user-agent', '-b', '--cookie', '--url', '-o', '--output', '--max-time', '--connect-timeout']);
+  let method: HttpMethod | undefined;
+  let url = '';
+  const headers: HeaderPair[] = [];
+  const dataParts: string[] = [];
+  let authValue = '';
+  const skipValueFlags = new Set(['-o', '--output', '--max-time', '--connect-timeout']);
+  for (let i = start; i < tokens.length; i++) {
+    const tok = tokens[i];
+    let flag = tok, inlineValue: string | undefined;
+    const eq = tok.indexOf('=');
+    if (tok.startsWith('--') && eq > 2) { flag = tok.slice(0, eq); inlineValue = tok.slice(eq + 1); }
+    const takeValue = (): string => {
+      if (inlineValue !== undefined) { return inlineValue; }
+      i++;
+      if (i >= tokens.length) { throw new Error(`cURL flag ${flag} needs a value.`); }
+      return tokens[i];
+    };
+    if (flag === '-X' || flag === '--request') {
+      const m = takeValue().toUpperCase();
+      method = (['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const).includes(m as HttpMethod) ? (m as HttpMethod) : undefined;
+      if (!method) { throw new Error(`Unsupported HTTP method in the cURL command: ${m}. ApiDiya supports GET, POST, PUT, PATCH and DELETE.`); }
+    } else if (flag === '-H' || flag === '--header') {
+      const h = takeValue();
+      const colon = h.indexOf(':');
+      if (colon > 0) { headers.push({ key: h.slice(0, colon).trim(), value: h.slice(colon + 1).trim() }); }
+    } else if (flag === '-d' || flag === '--data' || flag === '--data-raw' || flag === '--data-binary' || flag === '--data-ascii') {
+      dataParts.push(takeValue());
+    } else if (flag === '--json') {
+      dataParts.push(takeValue());
+      if (!headers.some((h) => h.key.toLowerCase() === 'content-type')) {
+        headers.push({ key: 'Content-Type', value: 'application/json' });
+      }
+    } else if (flag === '-u' || flag === '--user') {
+      authValue = takeValue();
+    } else if (flag === '-A' || flag === '--user-agent') {
+      headers.push({ key: 'User-Agent', value: takeValue() });
+    } else if (flag === '-b' || flag === '--cookie') {
+      headers.push({ key: 'Cookie', value: takeValue() });
+    } else if (flag === '--url') {
+      url = takeValue();
+    } else if (skipValueFlags.has(flag) || valueFlags.has(flag)) {
+      takeValue(); // known flag whose value we do not need (output file, timeouts)
+    } else if (flag.startsWith('-') && flag !== '-') {
+      // Unknown flag (e.g. -k, -L, --compressed, -s, -i): skipped, never executed.
+      continue;
+    } else if (!url) {
+      url = tok;
+    }
+    // Any further bare token after the URL is ignored (e.g. a trailing comment token).
+  }
+  if (!url) { throw new Error('No URL found in that cURL command.'); }
+  if (!/^https?:\/\//i.test(url) && !url.startsWith('{{')) {
+    throw new Error(`The URL "${url}" does not look like an http(s) URL.`);
+  }
+  return {
+    method: method || (dataParts.length > 0 ? 'POST' : 'GET'),
+    url,
+    headersText: headers.map((h) => `${h.key}: ${h.value}`).join('\n'),
+    body: dataParts.join('&'),
+    authType: authValue ? 'basic' : 'none',
+    authValue,
+  };
 }

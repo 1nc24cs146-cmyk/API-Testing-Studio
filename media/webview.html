@@ -18,8 +18,8 @@ pre{background:#020617;border:1px solid #334155;border-radius:6px;padding:8px;wh
 </style>
 </head>
 <body>
-<h2>ApiDiya <span class="small">v0.2.3</span></h2>
-<p class="small">Send requests, save collections, switch environments. Secrets are never shown in full in History. New in v0.2.3: code snippets (cURL / fetch / Python), WebSocket + SSE testing, and a local MCP server for AI agents.</p>
+<h2>ApiDiya <span class="small">v0.3.0</span></h2>
+<p class="small">Send requests, save collections, switch environments. Secrets are never shown in full in History. New in v0.3.0: data-driven suite runs from a CSV/JSON file, JSON Schema response validation, and import from cURL. New in v0.2.5: AI test generation with local Ollama, and the MCP server now has 12 tools. New in v0.2.3: code snippets (cURL / fetch / Python), WebSocket + SSE testing, and a local MCP server for AI agents.</p>
 <p class="small" id="dlCount">⬇ <span id="dlNumber">—</span> downloads on Antigravity</p>
 <p class="small"><b>Privacy:</b> everything ApiDiya stores stays on this device only — collections, environments, suites, test runs, mocks and history in local editor storage (never synced to a cloud), and saved auth tokens in your operating system's keychain. No account, no cloud, no telemetry. The only network traffic is the request you send, to the URL you typed.</p>
 
@@ -84,6 +84,26 @@ pre{background:#020617;border:1px solid #334155;border-radius:6px;padding:8px;wh
 <button id="addAs">Add assertion</button><button id="runTest">Run test</button><button id="genAs" class="secondary">Generate from last response</button>
 <div id="assertions"></div>
 <div id="testResult"></div>
+<label class="small">JSON Schema for this request (optional — the last response is checked against it on every test run, and it is saved with the request)</label>
+<textarea id="jsonSchema" placeholder='{"type": "object", "required": ["id", "name"], "properties": {"id": {"type": "integer"}, "name": {"type": "string"}}}' style="min-height:80px"></textarea>
+<div><button id="validateSchema" class="secondary">Validate last response against schema</button></div>
+<div id="schemaResult" class="small"></div>
+
+<h3>AI — test generation, on your machine</h3>
+<p class="small">AI runs locally via Ollama on your own machine — nothing leaves the device. No cloud model, no API key. Ollama must be running with a model pulled (see the setup note below); if it isn't, ApiDiya says so instead of pretending AI ran.</p>
+<div class="row"><input id="aiUrl" placeholder="Ollama URL, e.g. http://localhost:11434"><input id="aiModel" placeholder="Model, e.g. llama3.1:8b"></div>
+<div><button id="aiSaveSettings" class="secondary">Save AI settings</button><button id="aiTestConn" class="secondary">Test connection</button></div>
+<div id="aiConnStatus" class="small"></div>
+<div>
+<button id="aiGenTests">Generate tests with AI</button>
+<button id="aiExplain" class="secondary">Explain last failure</button>
+</div>
+<div id="aiGenReport" class="small"></div>
+<pre id="aiExplainOut"></pre>
+<label class="small">Create a request from words</label>
+<div class="row"><input id="aiInstruction" placeholder="e.g. GET the list of users from the test API"><button id="aiGenReq">Generate</button></div>
+<div id="aiProposal"></div>
+<p class="small">Ollama setup: install Ollama, run <b>ollama pull llama3.1:8b</b> (or set another model above), then start it — <b>ollama serve</b>. Without a running Ollama and a pulled model, the AI buttons report that clearly.</p>
 
 <h3>Test suites</h3>
 <p class="small">Tick requests, name the suite, save it, then run it. A suite run uses each saved request as stored.</p>
@@ -91,6 +111,11 @@ pre{background:#020617;border:1px solid #334155;border-radius:6px;padding:8px;wh
 <div id="suiteBuilder"></div>
 <button id="saveSuite">Save suite</button>
 <div id="suites"></div>
+<h3>Data-driven runs</h3>
+<p class="small">Run a saved suite once per data row. Paste CSV (first line = column names) or a JSON array of objects. Each row's values replace {{variables}} in the URL, headers, query params and body for that run — row values win over the environment. Rows are used only for the run and are not stored.</p>
+<div class="row"><select id="ddSuite"></select><button id="runDataDriven">Run suite with data</button></div>
+<textarea id="ddData" placeholder="id,name&#10;1,Alice&#10;2,Bob" style="min-height:80px"></textarea>
+<div id="ddResult" class="small"></div>
 <h3>Recent test runs</h3>
 <div id="testRuns"></div>
 
@@ -100,6 +125,10 @@ pre{background:#020617;border:1px solid #334155;border-radius:6px;padding:8px;wh
 <textarea id="exportText" placeholder="Exported JSON appears here. Copy it, or paste JSON below and import it." style="min-height:100px"></textarea>
 <button id="importBtn">Import pasted JSON</button>
 <div id="importResult" class="small"></div>
+<label class="small">Import from cURL — paste a cURL command and create the request from it (the reverse of the code snippets above). -u becomes Basic auth and is stored in the keychain, never in the request.</label>
+<textarea id="curlText" placeholder="curl -X POST 'https://api.example.com/users' -H 'Content-Type: application/json' -d '{&quot;name&quot;: &quot;Alice&quot;}'" style="min-height:80px"></textarea>
+<div class="row"><select id="curlCol"></select><button id="importCurlBtn">Create request from cURL</button></div>
+<div id="curlResult" class="small"></div>
 
 <h3>Local mock server</h3>
 <p class="small">Serves only the mocks you add below, on your own machine. Start it, then point a request at http://localhost:PORT/your-path.</p>
@@ -131,7 +160,7 @@ pre{background:#020617;border:1px solid #334155;border-radius:6px;padding:8px;wh
 <div id="sseLog"></div>
 
 <h3>MCP server (for AI agents)</h3>
-<p class="small">Exposes your collections as MCP tools over Streamable HTTP on your own machine only (127.0.0.1). Start it, then point an MCP host at the URL below. Tool results never include secrets. Note: installing ApiDiya does not auto-connect it to LocalNest — LocalNest's MCP config must point at this URL, and this server must be running in the editor.</p>
+<p class="small">Exposes your collections as 12 MCP tools over Streamable HTTP on your own machine only (127.0.0.1) — list/create/save/send requests, get the last response, import OpenAPI, generate tests, run suites, explain failures, and generate docs. Start it, then point an MCP host at the URL below. Tool results never include secrets. Note: installing ApiDiya does not auto-connect it to LocalNest — LocalNest's MCP config must point at this URL, and this server must be running in the editor.</p>
 <div class="row"><input id="mcpPort" value="3102"><button id="startMcp">Start MCP server</button><button id="stopMcp" class="secondary">Stop</button></div>
 <div id="mcpStatus" class="small">MCP server stopped.</div>
 <label class="small">MCP host config (Streamable HTTP)</label>
@@ -140,14 +169,15 @@ pre{background:#020617;border:1px solid #334155;border-radius:6px;padding:8px;wh
 
 <script nonce="__NONCE__">
 const vscode = acquireVsCodeApi();
-let state = null, currentId = null, currentAssertions = [], lastResult = null;
+let state = null, currentId = null, currentAssertions = [], lastResult = null, lastError = null, aiProposal = null;
 const $ = (id) => document.getElementById(id);
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function currentRequest(){
   return { id: currentId, name: $('reqName').value || 'Untitled Request', method: $('method').value,
     url: $('url').value, headersText: $('headers').value, queryText: $('query').value,
     authType: $('authType').value, authValue: $('authValue').value, authKeyName: $('authKeyName').value,
-    body: $('body').value, collectionId: $('saveCol').value, assertions: currentAssertions };
+    body: $('body').value, collectionId: $('saveCol').value, assertions: currentAssertions,
+    jsonSchema: $('jsonSchema').value || undefined };
 }
 function renderAssertions(){
   $('assertions').innerHTML = currentAssertions.map((a, i) =>
@@ -182,6 +212,8 @@ function render(){
   $('testRuns').innerHTML = (state.testRuns || []).map(t =>
     '<div class="item">' + esc(t.suiteName) + ' — ' + t.passed + ' passed, ' + t.failed + ' failed · ' + esc(t.executedAt) + '</div>').join('') || '<p class="small">No test runs yet.</p>';
   $('exportCol').innerHTML = state.collections.map(c => '<option value="' + c.id + '">' + esc(c.name) + '</option>').join('');
+  $('curlCol').innerHTML = state.collections.map(c => '<option value="' + c.id + '">' + esc(c.name) + '</option>').join('');
+  $('ddSuite').innerHTML = (state.suites || []).map(s => '<option value="' + s.id + '">' + esc(s.name) + '</option>').join('') || '<option value="">(no suites yet)</option>';
   $('mocks').innerHTML = (state.mocks || []).map(m =>
     '<div class="item">' + esc(m.method) + ' ' + esc(m.path) + ' → ' + m.status +
     ' <button class="secondary" onclick="delMock(\'' + m.id + '\')">Delete</button></div>').join('') || '<p class="small">No mocks yet.</p>';
@@ -195,6 +227,7 @@ window.loadReq = (colId, reqId) => {
   $('authValue').value = ''; $('authKeyName').value = r.authKeyName || 'X-API-Key'; $('body').value = r.body;
   $('saveCol').value = colId;
   currentAssertions = r.assertions ? r.assertions.slice() : [];
+  $('jsonSchema').value = r.jsonSchema || '';
   renderAssertions();
 };
 window.delCol = (id) => vscode.postMessage({ type: 'deleteCollection', id });
@@ -210,6 +243,27 @@ $('addAs').onclick = () => {
 };
 $('runTest').onclick = () => vscode.postMessage({ type: 'runTest', request: currentRequest() });
 $('genAs').onclick = () => { if (lastResult) vscode.postMessage({ type: 'generateAssertions', result: lastResult }); };
+$('validateSchema').onclick = () => { $('schemaResult').textContent = 'Validating…'; vscode.postMessage({ type: 'validateSchema', schema: $('jsonSchema').value, result: lastResult }); };
+$('runDataDriven').onclick = () => { $('ddResult').textContent = 'Running…'; vscode.postMessage({ type: 'runDataDriven', suiteId: $('ddSuite').value, dataText: $('ddData').value }); };
+$('importCurlBtn').onclick = () => { if ($('curlText').value.trim()) { $('curlResult').textContent = 'Parsing cURL…'; vscode.postMessage({ type: 'importCurl', text: $('curlText').value, collectionId: $('curlCol').value }); } };
+// AI (local Ollama): generate tests, explain failures, create a request
+// from words. A proposed request is shown for review and is only loaded
+// into the builder when the user presses Use — it is never sent by itself.
+$('aiSaveSettings').onclick = () => vscode.postMessage({ type: 'saveAiSettings', url: $('aiUrl').value.trim(), model: $('aiModel').value.trim() });
+$('aiTestConn').onclick = () => { $('aiConnStatus').textContent = 'Checking Ollama…'; vscode.postMessage({ type: 'aiTestConnection' }); };
+$('aiGenTests').onclick = () => { $('aiGenReport').textContent = 'Asking local AI…'; vscode.postMessage({ type: 'aiGenerateTests', request: currentRequest(), result: lastResult }); };
+$('aiExplain').onclick = () => { $('aiExplainOut').textContent = 'Explaining…'; vscode.postMessage({ type: 'aiExplainFailure', request: currentRequest(), result: lastResult, error: lastError }); };
+$('aiGenReq').onclick = () => { if ($('aiInstruction').value.trim()) { $('aiProposal').innerHTML = '<p class="small">Asking local AI…</p>'; vscode.postMessage({ type: 'aiGenerateRequest', instruction: $('aiInstruction').value.trim() }); } };
+window.aiUseProposal = () => {
+  if (!aiProposal) return;
+  currentId = null; currentAssertions = []; renderAssertions();
+  $('reqName').value = 'AI: ' + aiProposal.method + ' ' + aiProposal.url;
+  $('method').value = aiProposal.method; $('url').value = aiProposal.url;
+  $('headers').value = aiProposal.headersText || ''; $('body').value = aiProposal.body || '';
+  $('query').value = ''; $('authType').value = 'none'; $('authValue').value = '';
+  aiProposal = null; $('aiProposal').innerHTML = '<p class="small">Loaded into the builder above — review it, then press Send or Save.</p>';
+};
+window.aiDiscardProposal = () => { aiProposal = null; $('aiProposal').innerHTML = ''; };
 $('saveSuite').onclick = () => {
   const ids = Array.prototype.slice.call(document.querySelectorAll('.suiteReq:checked')).map(e => e.value);
   if ($('suiteName').value.trim() && ids.length) vscode.postMessage({ type: 'createSuite', name: $('suiteName').value.trim(), requestIds: ids });
@@ -223,7 +277,7 @@ $('send').onclick = () => vscode.postMessage({ type: 'sendRequest', request: cur
 $('saveReq').onclick = () => vscode.postMessage({ type: 'saveRequest', request: currentRequest() });
 $('dupReq').onclick = () => vscode.postMessage({ type: 'duplicateRequest', request: currentRequest() });
 $('delReq').onclick = () => { vscode.postMessage({ type: 'deleteRequest', request: currentRequest() }); currentId = null; };
-$('newReq').onclick = () => { currentId = null; currentAssertions = []; renderAssertions(); $('reqName').value = 'Untitled Request'; $('method').value = 'GET'; $('url').value = '{{baseUrl}}/users'; $('headers').value = ''; $('query').value = ''; $('authType').value = 'none'; $('authValue').value = ''; $('body').value = ''; };
+$('newReq').onclick = () => { currentId = null; currentAssertions = []; renderAssertions(); $('reqName').value = 'Untitled Request'; $('method').value = 'GET'; $('url').value = '{{baseUrl}}/users'; $('headers').value = ''; $('query').value = ''; $('authType').value = 'none'; $('authValue').value = ''; $('body').value = ''; $('jsonSchema').value = ''; };
 $('newCol').onclick = () => { if ($('newColName').value.trim()) vscode.postMessage({ type: 'newCollection', name: $('newColName').value.trim() }); };
 $('saveEnv').onclick = () => vscode.postMessage({ type: 'saveEnvVars', envId: $('envSelect').value, varsText: $('envVars').value });
 $('envSelect').onchange = () => vscode.postMessage({ type: 'setActiveEnv', envId: $('envSelect').value });
@@ -257,8 +311,8 @@ window.addEventListener('message', (e) => {
   const m = e.data;
   if (m.type === 'state') { state = m.state; render(); }
   if (m.type === 'response') {
-    if (m.error) { lastResult = null; $('respMeta').textContent = 'Error: ' + m.error; $('respBody').textContent = ''; $('respHeaders').textContent = ''; }
-    else { lastResult = m.result; $('respMeta').textContent = m.result.status + ' ' + m.result.statusText + ' · ' + m.result.timeMs + 'ms · ' + m.result.sizeBytes + ' bytes';
+    if (m.error) { lastResult = null; lastError = m.error; $('respMeta').textContent = 'Error: ' + m.error; $('respBody').textContent = ''; $('respHeaders').textContent = ''; }
+    else { lastResult = m.result; lastError = null; $('respMeta').textContent = m.result.status + ' ' + m.result.statusText + ' · ' + m.result.timeMs + 'ms · ' + m.result.sizeBytes + ' bytes';
       $('respBody').textContent = m.prettyBody; $('respHeaders').textContent = m.result.headers.map(h => h.key + ': ' + h.value).join('\n'); }
   }
   if (m.type === 'testResult') {
@@ -278,6 +332,50 @@ window.addEventListener('message', (e) => {
   if (m.type === 'sseEvent') { sseLog('[' + (m.event.event || 'message') + '] ' + m.event.data); }
   if (m.type === 'sseStatus') { $('sseStatus').textContent = m.text; }
   if (m.type === 'mcpStatus') { $('mcpStatus').textContent = m.error ? ('MCP server error: ' + m.error) : (m.running ? ('MCP server running on http://localhost:' + m.port + '/mcp') : 'MCP server stopped.'); $('mcpConfig').value = m.config || ''; }
+  if (m.type === 'aiSettings') { if (m.settings) { $('aiUrl').value = m.settings.url || ''; $('aiModel').value = m.settings.model || ''; } }
+  if (m.type === 'aiConnection') {
+    $('aiConnStatus').textContent = !m.reachable ? ('Ollama not reachable: ' + (m.error || 'check it is running.'))
+      : m.modelFound ? ('Ollama is running and model "' + (m.settings && m.settings.model) + '" is ready.')
+      : ('Ollama is running, but model "' + (m.settings && m.settings.model) + '" is not pulled. Run: ollama pull ' + (m.settings && m.settings.model));
+  }
+  if (m.type === 'aiGeneratedAssertions') {
+    if (m.error) { $('aiGenReport').textContent = m.error; }
+    else { $('aiGenReport').textContent = 'AI generated ' + m.kept + ' assertion(s)' + (m.dropped ? ' (' + m.dropped + ' invalid suggestion(s) dropped)' : '') + ' — saved on this request.'; }
+    if (m.assertions && m.assertions.length) { currentAssertions = m.assertions; renderAssertions(); }
+  }
+  if (m.type === 'aiExplanation') { $('aiExplainOut').textContent = '[' + (m.source === 'ai' ? 'Local AI (Ollama)' : 'Rule-based explanation — Ollama was not available') + ']\n\n' + (m.text || ''); }
+  if (m.type === 'aiProposedRequest') {
+    if (m.error) { aiProposal = null; $('aiProposal').innerHTML = '<p class="small">' + esc(m.error) + '</p>'; }
+    else if (m.request) {
+      aiProposal = m.request;
+      $('aiProposal').innerHTML = '<div class="item"><b>' + esc(m.request.method) + '</b> ' + esc(m.request.url) +
+        (m.request.headersText ? '<br><span class="small">' + esc(m.request.headersText) + '</span>' : '') +
+        (m.request.body ? '<br><pre>' + esc(m.request.body) + '</pre>' : '') +
+        '<br><button onclick="aiUseProposal()">Use this request</button> <button class="secondary" onclick="aiDiscardProposal()">Discard</button></div>';
+    }
+  }
+  if (m.type === 'schemaResult') {
+    $('schemaResult').textContent = !m.ok ? m.error
+      : m.parseError ? m.parseError
+      : m.valid ? '✓ Response matches the JSON Schema.'
+      : '✗ Schema mismatches:\n' + m.errors.join('\n');
+  }
+  if (m.type === 'dataDrivenResult') {
+    $('ddResult').innerHTML = !m.ok ? esc(m.error)
+      : '<p><b>' + esc(m.suiteName) + ' — ' + m.rowCount + ' row(s): ' + m.totalPassed + ' passed, ' + m.totalFailed + ' failed</b></p>' +
+        m.perRow.map(r => '<div class="small">Row ' + r.rowIndex + ' (' + esc(Object.entries(r.row).map(([k, v]) => k + '=' + v).join(', ')) + '): ' + r.passed + ' passed, ' + r.failed + ' failed' +
+          r.results.map(x => '<br>&nbsp;&nbsp;' + esc(x.requestName) + ' — ' + x.passed + ' passed, ' + x.failed + ' failed' + (x.error ? ' (error: ' + esc(x.error) + ')' : '')).join('') + '</div>').join('');
+  }
+  if (m.type === 'curlImportResult') {
+    if (!m.ok) { $('curlResult').textContent = 'Import failed: ' + m.error; }
+    else {
+      $('curlResult').textContent = 'Created ' + m.request.method + ' ' + m.request.url + ' in ' + m.collectionName + ' — loaded into the builder above.';
+      currentId = m.request.id; $('reqName').value = m.request.name; $('method').value = m.request.method; $('url').value = m.request.url;
+      $('headers').value = m.request.headersText; $('query').value = ''; $('authType').value = m.request.authType;
+      $('authValue').value = ''; $('authKeyName').value = 'X-API-Key'; $('body').value = m.request.body;
+      $('saveCol').value = m.request.collectionId; currentAssertions = []; $('jsonSchema').value = ''; renderAssertions();
+    }
+  }
   if (m.type === 'downloadCount') { $('dlNumber').textContent = Number(m.count).toLocaleString('en-IN'); }
 });
 vscode.postMessage({ type: 'ready' });

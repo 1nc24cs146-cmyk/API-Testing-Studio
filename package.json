@@ -4,9 +4,25 @@
     "onCommand:apiStudio.open"
   ],
   "categories": [
+    "Testing",
     "Other"
   ],
   "contributes": {
+    "configuration": {
+      "title": "ApiDiya",
+      "properties": {
+        "apidiya.ai.ollamaUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "URL of the local Ollama server used for AI test generation. Nothing is sent to any cloud."
+        },
+        "apidiya.ai.model": {
+          "type": "string",
+          "default": "llama3.1:8b",
+          "description": "Ollama model used for AI test generation. Pull it first with: ollama pull llama3.1:8b"
+        }
+      }
+    },
     "commands": [
       {
         "command": "apiStudio.open",
@@ -31,7 +47,7 @@
       ]
     }
   },
-  "description": "API testing workspace for VS Code and Antigravity",
+  "description": "API testing workspace for VS Code and Antigravity — collections, environments, test suites, mocks, code snippets, WebSocket + SSE, local AI test generation with Ollama, and a local MCP server with 12 tools. Everything stays on your device.",
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
@@ -50,7 +66,7 @@
     "compile": "tsc -p ./",
     "package": "vsce package"
   },
-  "version": "0.2.3",
+  "version": "0.3.0",
   "keywords": [
     "api",
     "rest",
@@ -59,7 +75,21 @@
     "collections",
     "environments",
     "antigravity",
-    "apidiya"
+    "apidiya",
+    "websocket",
+    "sse",
+    "mcp",
+    "snippets",
+    "curl",
+    "json-schema",
+    "data-driven",
+    "postman",
+    "rest-client",
+    "api-testing",
+    "http-client",
+    "mock",
+    "fetch",
+    "json"
   ],
   "icon": "media/icon.png"
 }
