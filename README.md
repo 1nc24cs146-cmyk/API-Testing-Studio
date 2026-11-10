@@ -24,7 +24,7 @@
 | | |
 |---|---|
 | **Extension** | `nitinkumarhiremath.api-testing-studio` (this build) — live on Open VSX as `apidiya.api-testing-studio` |
-| **Version** | 0.3.1 (0.2.5 on Open VSX — the user publishes the VSIX) |
+| **Version** | 0.3.1 |
 | **Downloads** | 596 on Open VSX (6 Nov 2026) |
 | **Editors** | VS Code and Antigravity — the same VSIX installs in either |
 | **Storage** | Local only. No account, no cloud database, no telemetry, no analytics |
