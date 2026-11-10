@@ -6,7 +6,7 @@
 **A Postman-style testing workspace for VS Code and Antigravity — send requests, save collections, run test suites, and mock APIs locally, with no cloud and no account.**
 
 [![Open VSX](https://img.shields.io/badge/Open_VSX-apidiya.api--testing--studio-0d9488?style=for-the-badge)](https://open-vsx.org/extension/apidiya/api-testing-studio)
-[![Version](https://img.shields.io/badge/Version-v0.3.0-8b5cf6?style=for-the-badge)](https://github.com/1nc24cs146-cmyk/API-Testing-Studio)
+[![Version](https://img.shields.io/badge/Version-v0.3.1-8b5cf6?style=for-the-badge)](https://github.com/1nc24cs146-cmyk/API-Testing-Studio)
 [![Downloads](https://img.shields.io/badge/Downloads-596-10b981?style=for-the-badge)](https://open-vsx.org/extension/apidiya/api-testing-studio)
 [![Privacy](https://img.shields.io/badge/Storage-Local_only-0f172a?style=for-the-badge)](#-privacy--stored-on-your-device-only)
 
@@ -24,7 +24,7 @@
 | | |
 |---|---|
 | **Extension** | `nitinkumarhiremath.api-testing-studio` (this build) — live on Open VSX as `apidiya.api-testing-studio` |
-| **Version** | 0.3.0 (0.2.5 on Open VSX — the user publishes the VSIX) |
+| **Version** | 0.3.1 (0.2.5 on Open VSX — the user publishes the VSIX) |
 | **Downloads** | 596 on Open VSX (6 Nov 2026) |
 | **Editors** | VS Code and Antigravity — the same VSIX installs in either |
 | **Storage** | Local only. No account, no cloud database, no telemetry, no analytics |
@@ -38,14 +38,18 @@ Original code, built from the PDF spec in the project brief (milestone 1 only). 
 
 1. Open VS Code or Antigravity.
 2. Open Extensions, then `...` (more actions) → **Install from VSIX…**
-3. Choose `apidiya-vscode-0.3.0.vsix / apidiya-antigravity-0.3.0.vsix` from this folder.
+3. Choose `apidiya-vscode-0.3.1.vsix / apidiya-antigravity-0.3.1.vsix` from this folder.
 4. Click the ApiDiya icon in the activity bar, or run the command **ApiDiya: Open** from the Command Palette.
 
 To publish it later, use this same VSIX for both stores: the VS Code Marketplace for VS Code users, and Open VSX for Antigravity users (Antigravity installs from Open VSX, not the VS Code Marketplace).
 
 ## ✨ What it does
 
-### Latest: data-driven runs, JSON Schema validation, cURL import (v0.3.0)
+### Latest: AI mock responses from an OpenAPI schema (v0.3.1)
+
+- **AI mock responses:** "Generate with AI" on any mock in the Mock server section — or the `ApiDiya: Generate mock response with AI` command from the Command Palette — asks your local Ollama server for a realistic response body for that endpoint and saves it as the mock's response. The schema comes from the endpoint's saved request: importing an OpenAPI 3 spec now captures the 2xx response's `application/json` schema onto each request (local `#/components/schemas/*` refs resolved inline), or you can paste a JSON Schema on the request by hand. The generated body is validated against the schema before it is saved — a body that does not fit is reported with its mismatches and never stored as a broken mock. No schema, an unparseable schema, or Ollama being down each get one clear message instead of generated garbage or an error popup storm. Fully local only: the only network call is to your configured Ollama URL, no cloud, no keys, and no auth token is ever put in a prompt.
+
+### Data-driven runs, JSON Schema validation, cURL import (v0.3.0)
 
 - **Data-driven collection runs:** paste CSV (first line = column names) or a JSON array of objects into the "Data-driven runs" section, pick a saved suite, and ApiDiya runs the suite once per row, substituting each row's values into `{{variables}}` in the URL, headers, query params and body. Row values win over the active environment's variables. Every row gets its own per-row pass/fail result (which requests passed/failed in that row) plus a totals line, and each row is recorded as its own test run. Rows are used only for the run and are never stored.
 - **JSON Schema response validation:** paste a JSON Schema into the "JSON Schema" box under Assertions for any request and it is saved with the request. On every test run (single request or suite) the response body is checked against it as an extra assertion, and "Validate last response against schema" checks it on demand. Mismatches are reported plainly, e.g. `$.id: expected type integer, got string` or `missing required property 'email'`. The validator covers type, required, properties, items, enum, minimum/maximum, minLength/maxLength, pattern, minItems/maxItems and `additionalProperties: false`; `$ref` and `allOf`/`anyOf`/`oneOf` are reported as unsupported rather than silently half-checked, and a non-JSON body or a malformed schema gives a clear error instead of a pass.
@@ -117,7 +121,7 @@ npm run compile
 npx vsce package
 ```
 
-The packaged file is `apidiya-vscode-0.3.0.vsix / apidiya-antigravity-0.3.0.vsix`.
+The packaged file is `apidiya-vscode-0.3.1.vsix / apidiya-antigravity-0.3.1.vsix`.
 
 ---
 

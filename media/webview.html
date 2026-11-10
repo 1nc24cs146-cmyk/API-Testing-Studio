@@ -18,8 +18,8 @@ pre{background:#020617;border:1px solid #334155;border-radius:6px;padding:8px;wh
 </style>
 </head>
 <body>
-<h2>ApiDiya <span class="small">v0.3.0</span></h2>
-<p class="small">Send requests, save collections, switch environments. Secrets are never shown in full in History. New in v0.3.0: data-driven suite runs from a CSV/JSON file, JSON Schema response validation, and import from cURL. New in v0.2.5: AI test generation with local Ollama, and the MCP server now has 12 tools. New in v0.2.3: code snippets (cURL / fetch / Python), WebSocket + SSE testing, and a local MCP server for AI agents.</p>
+<h2>ApiDiya <span class="small">v0.3.1</span></h2>
+<p class="small">Send requests, save collections, switch environments. Secrets are never shown in full in History. New in v0.3.1: AI mock responses — generate a realistic mock body from an endpoint's OpenAPI schema with local Ollama. New in v0.3.0: data-driven suite runs from a CSV/JSON file, JSON Schema response validation, and import from cURL. New in v0.2.5: AI test generation with local Ollama, and the MCP server now has 12 tools. New in v0.2.3: code snippets (cURL / fetch / Python), WebSocket + SSE testing, and a local MCP server for AI agents.</p>
 <p class="small" id="dlCount">⬇ <span id="dlNumber">—</span> downloads on Antigravity</p>
 <p class="small"><b>Privacy:</b> everything ApiDiya stores stays on this device only — collections, environments, suites, test runs, mocks and history in local editor storage (never synced to a cloud), and saved auth tokens in your operating system's keychain. No account, no cloud, no telemetry. The only network traffic is the request you send, to the URL you typed.</p>
 
@@ -141,6 +141,8 @@ pre{background:#020617;border:1px solid #334155;border-radius:6px;padding:8px;wh
 </div>
 <textarea id="mockBody" placeholder='Mock response body, e.g. {"id": 1, "name": "Mock User"}'></textarea>
 <button id="addMock" class="secondary">Add mock</button>
+<p class="small">AI mock responses: "Generate with AI" on a mock asks your local Ollama for a realistic body matching the endpoint's OpenAPI schema (from an imported spec, or a JSON Schema pasted on the matching saved request). The body is checked against the schema before it is saved — a body that does not fit is reported, never stored. Without a schema, or without Ollama running, it says so instead of guessing.</p>
+<div id="aiMockStatus" class="small"></div>
 <div id="mocks"></div>
 
 <h3>Real-time: WebSocket + SSE</h3>
@@ -216,6 +218,7 @@ function render(){
   $('ddSuite').innerHTML = (state.suites || []).map(s => '<option value="' + s.id + '">' + esc(s.name) + '</option>').join('') || '<option value="">(no suites yet)</option>';
   $('mocks').innerHTML = (state.mocks || []).map(m =>
     '<div class="item">' + esc(m.method) + ' ' + esc(m.path) + ' → ' + m.status +
+    ' <button class="secondary" onclick="aiGenMock(\'' + m.id + '\')">Generate with AI</button>' +
     ' <button class="secondary" onclick="delMock(\'' + m.id + '\')">Delete</button></div>').join('') || '<p class="small">No mocks yet.</p>';
 }
 window.loadReq = (colId, reqId) => {
@@ -235,6 +238,7 @@ window.rerun = (id) => vscode.postMessage({ type: 'rerunHistory', id });
 window.runSuite = (id) => vscode.postMessage({ type: 'runSuite', id });
 window.delSuite = (id) => vscode.postMessage({ type: 'deleteSuite', id });
 window.delMock = (id) => vscode.postMessage({ type: 'deleteMock', id });
+window.aiGenMock = (id) => { $('aiMockStatus').textContent = 'Asking local AI for a mock body…'; vscode.postMessage({ type: 'aiGenerateMock', mockId: id }); };
 $('addAs').onclick = () => {
   const kind = $('asKind').value, expected = $('asExpected').value;
   if (!expected) return;
@@ -328,6 +332,11 @@ window.addEventListener('message', (e) => {
   if (m.type === 'exportResult') { $('exportText').value = m.json; $('importResult').textContent = 'Exported. Copy the JSON above.'; }
   if (m.type === 'importResult') { $('importResult').textContent = m.ok ? ('Imported ' + m.count + ' collection(s): ' + m.names.join(', ')) : ('Import failed: ' + m.error); }
   if (m.type === 'mockStatus') { $('mockStatus').textContent = m.error ? ('Mock server error: ' + m.error) : (m.running ? ('Mock server running on http://localhost:' + m.port) : 'Mock server stopped.'); }
+  if (m.type === 'aiMockResult') {
+    $('aiMockStatus').textContent = m.ok
+      ? '✓ AI generated a mock body that matches the endpoint schema — saved on the mock.'
+      : ('AI mock failed: ' + (m.error || 'unknown error'));
+  }
   if (m.type === 'snippetResult') { $('snippet').textContent = m.code; navigator.clipboard.writeText(m.code); $('snippetNote').textContent = 'Copied ' + m.kind + ' snippet. Snippets include your auth token if one is set — treat a pasted snippet like a password.'; }
   if (m.type === 'sseEvent') { sseLog('[' + (m.event.event || 'message') + '] ' + m.event.data); }
   if (m.type === 'sseStatus') { $('sseStatus').textContent = m.text; }

@@ -385,6 +385,77 @@ function collectPostmanItems(items: unknown[], out: ApiRequest[], collectionId: 
   }
 }
 
+// ---------------------------------------------------------------------------
+// v0.3.1: OpenAPI response schemas. The 2xx response's application/json
+// schema is captured on import so AI mock generation (and schema
+// validation) can use it. Local #/components/schemas/* refs are resolved
+// inline, recursively, with cycle protection; a ref that cannot be
+// resolved (external file, unknown name, cycle) is left as-is and the
+// schema validator reports $ref as unsupported rather than pretending
+// the schema was fully checked.
+// ---------------------------------------------------------------------------
+
+const OPENAPI_SCHEMA_REF_PREFIX = '#/components/schemas/';
+
+/** Resolve local #/components/schemas/* $refs inside a schema, inline. Cycle-safe. */
+export function resolveOpenApiSchemaRef(schema: unknown, components: Record<string, unknown>, seen: Set<string> = new Set()): unknown {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) { return schema; }
+  const s = schema as Record<string, unknown>;
+  if (typeof s.$ref === 'string' && s.$ref.startsWith(OPENAPI_SCHEMA_REF_PREFIX)) {
+    const name = s.$ref.slice(OPENAPI_SCHEMA_REF_PREFIX.length);
+    if (!seen.has(name)) {
+      const target = components[name];
+      if (target && typeof target === 'object' && !Array.isArray(target)) {
+        const next = new Set(seen);
+        next.add(name);
+        const resolved = resolveOpenApiSchemaRef(target, components, next);
+        const { $ref: _ignored, ...siblings } = s;
+        if (Object.keys(siblings).length === 0) { return resolved; }
+        if (resolved && typeof resolved === 'object' && !Array.isArray(resolved)) {
+          return { ...(resolved as Record<string, unknown>), ...siblings };
+        }
+        return resolved;
+      }
+    }
+    return schema; // Unresolvable or cyclic ref: leave it; the validator flags $ref.
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(s)) {
+    if (key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)) {
+      const props: Record<string, unknown> = {};
+      for (const [propKey, propValue] of Object.entries(value as Record<string, unknown>)) {
+        props[propKey] = resolveOpenApiSchemaRef(propValue, components, seen);
+      }
+      out[key] = props;
+    } else if ((key === 'items' || key === 'additionalProperties') && value && typeof value === 'object') {
+      out[key] = resolveOpenApiSchemaRef(value, components, seen);
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+/**
+ * Extract the 2xx response's application/json schema from one OpenAPI
+ * operation (lowest 2xx code wins, else "default"). Returns the schema as
+ * pretty JSON text, or undefined when the operation has no JSON response
+ * schema. Never throws.
+ */
+export function extractOpenApiResponseSchema(operation: Record<string, unknown>, components: Record<string, unknown>): string | undefined {
+  try {
+    const responses = operation.responses as Record<string, Record<string, unknown>> | undefined;
+    if (!responses || typeof responses !== 'object') { return undefined; }
+    const codes = Object.keys(responses).filter((c) => /^2\d\d$/.test(c)).sort();
+    const code = codes[0] || (responses.default ? 'default' : undefined);
+    if (!code) { return undefined; }
+    const content = (responses[code] as Record<string, unknown> | undefined)?.content as Record<string, Record<string, unknown>> | undefined;
+    const schema = content?.['application/json']?.schema;
+    if (!schema) { return undefined; }
+    return JSON.stringify(resolveOpenApiSchemaRef(schema, components), null, 2);
+  } catch { return undefined; }
+}
+
 /**
  * Parse pasted JSON into collections. Accepts:
  *  - ApiDiya native: { apidiya: 1, collections: [...] }
@@ -431,6 +502,10 @@ export function parseImportedCollections(text: string): ApiCollection[] {
 
   if (typeof obj.openapi === 'string' && obj.paths && typeof obj.paths === 'object') {
     // OpenAPI 3: one collection per tag (first tag wins), untagged go to "OpenAPI".
+    // v0.3.1: the 2xx response's application/json schema is captured on each
+    // request as jsonSchema (local #/components/schemas/* refs resolved
+    // inline), so AI mock generation and schema validation can use it.
+    const components = ((obj.components as Record<string, unknown> | undefined)?.schemas || {}) as Record<string, unknown>;
     const byTag = new Map<string, ApiRequest[]>();
     const colIdByTag = new Map<string, string>();
     const ensureTag = (tag: string): string => {
@@ -447,6 +522,7 @@ export function parseImportedCollections(text: string): ApiCollection[] {
           id: newId('req'), name: String(op.operationId || op.summary || `${method.toUpperCase()} ${pathName}`),
           method: toMethod(method), url: `{{baseUrl}}${pathName}`, headersText: 'Content-Type: application/json',
           queryText: '', authType: 'none', authValue: '', authKeyName: 'X-API-Key', body: '', collectionId: colId,
+          jsonSchema: extractOpenApiResponseSchema(op, components),
         });
       }
     }

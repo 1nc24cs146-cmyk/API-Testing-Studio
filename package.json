@@ -1,7 +1,8 @@
 {
   "activationEvents": [
     "onView:apiStudio.main",
-    "onCommand:apiStudio.open"
+    "onCommand:apiStudio.open",
+    "onCommand:apiStudio.aiGenerateMock"
   ],
   "categories": [
     "Testing",
@@ -27,6 +28,10 @@
       {
         "command": "apiStudio.open",
         "title": "ApiDiya: Open"
+      },
+      {
+        "command": "apiStudio.aiGenerateMock",
+        "title": "ApiDiya: Generate mock response with AI"
       }
     ],
     "views": {
@@ -47,7 +52,7 @@
       ]
     }
   },
-  "description": "API testing workspace for VS Code and Antigravity — collections, environments, test suites, mocks, code snippets, WebSocket + SSE, local AI test generation with Ollama, and a local MCP server with 12 tools. Everything stays on your device.",
+  "description": "API testing workspace for VS Code and Antigravity — collections, environments, test suites, mocks, code snippets, WebSocket + SSE, local AI test generation with Ollama, AI mock responses from OpenAPI schemas, and a local MCP server with 12 tools. Everything stays on your device.",
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
@@ -66,7 +71,7 @@
     "compile": "tsc -p ./",
     "package": "vsce package"
   },
-  "version": "0.3.0",
+  "version": "0.3.1",
   "keywords": [
     "api",
     "rest",

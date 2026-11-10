@@ -15,7 +15,7 @@ import {
 import {
   DEFAULT_MODEL, DEFAULT_OLLAMA_URL, OllamaSettings,
   buildExplainPrompt, buildRequestGenPrompt, buildTestGenPrompt, callOllama,
-  checkOllama, explainFailureRuleBased, parseGeneratedAssertions, parseGeneratedRequest,
+  checkOllama, explainFailureRuleBased, generateAiMockBody, parseGeneratedAssertions, parseGeneratedRequest,
 } from './ai';
 import { McpContext, handleMcpMessage } from './mcp';
 
@@ -264,6 +264,43 @@ class ApiStudioProvider implements vscode.WebviewViewProvider {
     return undefined;
   }
 
+  // --- v0.3.1: AI mock responses ----------------------------------------
+  // A mock is tied to an endpoint by method + path. Its schema comes from
+  // the saved request for that endpoint (jsonSchema, set by an OpenAPI
+  // import or pasted by hand); an explicit request id wins when given.
+  // The generated body is validated against the schema before it is
+  // saved, so a broken mock is never stored. One clear message reports
+  // the outcome — no error popup storm.
+  private static normalisePath(raw: string): string {
+    let s = raw.split('?')[0];
+    s = s.replace(/^\{\{[^}]+\}\}/, ''); // strip a {{baseUrl}} prefix
+    s = s.replace(/^https?:\/\/[^/]+/i, ''); // strip an origin
+    if (s.length > 1 && s.endsWith('/')) { s = s.slice(0, -1); }
+    return s || '/';
+  }
+
+  private findRequestForMock(mock: MockEndpoint): ApiRequest | undefined {
+    const path = ApiStudioProvider.normalisePath(mock.path);
+    const matches = this.state.collections.flatMap((c) => c.requests)
+      .filter((r) => r.method === mock.method && ApiStudioProvider.normalisePath(r.url) === path);
+    return matches.find((r) => r.jsonSchema && r.jsonSchema.trim()) || matches[0];
+  }
+
+  /** Generate + validate an AI mock body and save it on the mock. Only saves when the body is valid. */
+  public async generateAiMockBodyFor(mock: MockEndpoint, requestId?: string): Promise<{ ok: boolean; body?: string; error?: string }> {
+    const request = (requestId ? this.findRequest(requestId) : undefined)
+      || this.findRequestForMock(mock);
+    if (!request) {
+      return { ok: false, error: `No saved request matches ${mock.method} ${mock.path}. Save a request for this endpoint (or import its OpenAPI spec) first, so the mock has a schema to generate against.` };
+    }
+    const result = await generateAiMockBody(this.aiSettings(), request, request.jsonSchema);
+    if (!result.ok) { return { ok: false, error: result.error }; }
+    mock.body = result.body;
+    await this.save();
+    this.postState();
+    return { ok: true, body: result.body };
+  }
+
   public stopMockServer(): void {
     if (this.mockServer) { this.mockServer.close(); this.mockServer = undefined; this.mockPort = 0; }
   }
@@ -293,7 +330,7 @@ class ApiStudioProvider implements vscode.WebviewViewProvider {
   // is down they fall back to the rule-based versions and say so.
   private mcpContext(): McpContext {
     return {
-      version: '0.3.0',
+      version: '0.3.1',
       listCollections: () => this.state.collections.map((c) => ({
         id: c.id, name: c.name,
         requests: c.requests.map((r) => ({ id: r.id, name: r.name, method: r.method, url: r.url })),
@@ -794,6 +831,21 @@ class ApiStudioProvider implements vscode.WebviewViewProvider {
         }
         break;
       }
+      // --- v0.3.1: AI mock responses --------------------------------------
+      // One message back to the sidebar (aiMockResult) reports the outcome.
+      // A mock with no matching request or no schema gets a clear message
+      // instead of generated garbage; an invalid generated body is never saved.
+      case 'aiGenerateMock': {
+        const mock = this.state.mocks.find((m) => m.id === msg.mockId);
+        if (!mock) {
+          this.view?.webview.postMessage({ type: 'aiMockResult', ok: false, error: 'That mock no longer exists.' });
+          break;
+        }
+        const requestId = typeof msg.requestId === 'string' ? msg.requestId : undefined;
+        const result = await this.generateAiMockBodyFor(mock, requestId);
+        this.view?.webview.postMessage({ type: 'aiMockResult', ok: result.ok, mockId: mock.id, body: result.body, error: result.error });
+        break;
+      }
       case 'createSuite': {
         const name = String(msg.name || '').trim();
         const requestIds = Array.isArray(msg.requestIds) ? (msg.requestIds as string[]) : [];
@@ -974,6 +1026,25 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerWebviewViewProvider('apiStudio.main', provider),
     vscode.commands.registerCommand('apiStudio.open', async () => {
       await vscode.commands.executeCommand('apiStudio.main.focus');
+    }),
+    // v0.3.1: generate an AI mock response body from the Command Palette.
+    // Pick a mock; the endpoint's OpenAPI schema (from an imported spec or
+    // a pasted JSON Schema) drives generation, and the body is validated
+    // before it is saved. One information message reports the outcome.
+    vscode.commands.registerCommand('apiStudio.aiGenerateMock', async () => {
+      if (state.mocks.length === 0) {
+        void vscode.window.showInformationMessage('ApiDiya: no mocks yet — add one in the Mock server section first.');
+        return;
+      }
+      const picked = await vscode.window.showQuickPick(
+        state.mocks.map((m) => ({ label: `${m.method} ${m.path}`, description: `→ ${m.status}`, mock: m })),
+        { placeHolder: 'Pick a mock to generate an AI response body for' },
+      );
+      if (!picked) { return; }
+      const result = await provider.generateAiMockBodyFor(picked.mock);
+      void vscode.window.showInformationMessage(result.ok
+        ? `ApiDiya: AI generated a mock body for ${picked.mock.method} ${picked.mock.path} that matches its OpenAPI schema.`
+        : `ApiDiya: could not generate a mock body — ${result.error || 'unknown error'}`);
     }),
   );
 }
